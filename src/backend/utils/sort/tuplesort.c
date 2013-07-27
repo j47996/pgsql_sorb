@@ -85,6 +85,75 @@
  * workMem/M to be large enough that we read a fair amount of data each time
  * we preread from a tape, so as to maintain the locality of access described
  * above.  Nonetheless, with large workMem we can have many tapes.
+
+ *
+ * ==============
+ *
+ * Sorb notes
+ *
+ * As an alternate to the quicksort core used for the internal sort we
+ * can use "Sorb".  This is an internal merge sort, with optimal merge
+ * scheduling.  The algothithm is from <ref>.
+ *
+ * Characteristics:
+ * + The sort is progressive, stable and comparison-based.
+ * + The memory overhead is O(n), in this implementation one extra pointer
+ *   per datum (added to the SortTuple struct).  Currently we also swallow
+ *   the overhead even when using the quicksort and external tape sort
+ *   methods; this could be coded around.
+ * + The runtime complexity is O(n log n) for random input, and O(N) for
+ *   presorted or reverse-sorted input with an optimal number of comparisons.
+ *   Worst-case is O(n log n); there are no pathological cases.
+ * + Runs of either direction in the input are naturally identified.
+ * + Only the pointers are written during the sort operation.
+ * + Handling bounded-size output is done during the sort.  We could implement
+ *   replicas with/without bounding if the repeated testing of the feature
+ *   is a performance issue.
+ * + Handling of unique output could likewise be done during the sort if
+ *   there are use cases.
+ * - Random-access and reverse access are not supported.  To do so we would
+ *   need to materialize the output linked-list into an array.
+ *
+ * Internals:
+ *  Sorb runs in three phases.
+ * + Run-linker:  Raw input is linked into a sorted ascending list for as
+ *  long as a non-descending or descending run persists.  The minimum run
+ *  length (apart from the very last input datum) is two, on random input
+ *  the average run length is 2.7 and on presorted input the entire stream
+ *  is one run (and checked as such).
+ * + Merge-scheduler:  A short (~30) array of hooks is maintained on which
+ *  can be hung sorted list.  A list produced by the linker is either
+ *  hung on the first hook (if the hook is free) or merged with the list
+ *  taken from the hook.  Merging is repeated working along the array of
+ *  hooks until a free hook has been reached.  The array size is a constraint
+ *  on the maximum data count; n hooks handling (worst-case) 2^(n+1)-1.  Thus
+ *  31 hooks manages 4G data elements.
+ * + Collector:  On input EOF the hooks array is swept from start to end
+ *  merging any lists found.  The final list is now in sorted order and
+ *  can be walked from start to end to output the data.
+ *
+ * Possible extensions:
+ *
+ *  As previous noted, building in a unique-ifier.
+ *
+ *  If the input keys have a well-distributed most-significant set of bits,
+ * eg text, it is possible to front-end Sorb with one stage of big-endian
+ * radix sort to split into bins, running Sorb separately for each bin.
+ * The final merge stage is merely to take each (now sorted) bin in order.
+ * Apart from the distribution requirement, performance is best when
+ * datum comparisons are expensive and datum reads are not.  Prototype
+ * testing shows both compares and reads at ~70% of baseline Sorb
+ * (integer data, N= 10^3 to 10^8) when using M=256 bins; worse with
+ * fewer bins and/or more data.
+ *  The cost is more memory; still O(log n) for this component but the
+ * crossover point where the O(n) become larger is n ~= 2000.  And a
+ * certain amount of coding complexity.
+ * 
+ *  There is potential for an MP Sorb implementation.  The merge stages
+ * are independent apart from the ordering required to maintain a
+ * stable sort.  The coding complexity would be large.
+ *
+ * ==============
  *
  *
  * Portions Copyright (c) 1996-2013, PostgreSQL Global Development Group
@@ -158,12 +227,13 @@ bool		optimize_bounded_sort = true;
  * from the same tape in the case of pre-read entries.	tupindex goes unused
  * if the sort occurs entirely in memory.
  */
-typedef struct
+typedef struct SortTuple
 {
 	void	   *tuple;			/* the tuple proper */
 	Datum		datum1;			/* value of first key column */
 	bool		isnull1;		/* is first key column NULL? */
 	int			tupindex;		/* see notes above */
+	struct SortTuple *next;		/* list used by the sorb method */
 } SortTuple;
 
 
@@ -173,6 +243,8 @@ typedef struct
  */
 typedef enum
 {
+	TSS_SORB,					/* Loading tuples using alternate internal sort; */
+								/* still withing memory limit                    */
 	TSS_INITIAL,				/* Loading tuples; still within memory limit */
 	TSS_BOUNDED,				/* Loading tuples into bounded-size heap */
 	TSS_BUILDRUNS,				/* Loading tuples; writing to tape */
@@ -560,6 +632,12 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 	if (trace_sort)
 		pg_rusage_init(&state->ru_start);
 #endif
+
+	/*
+	 * The sorb method cannot manage random (or reverse) access; fall 
+	 * back to quicksort if needed.
+	 */
+	state->status = randomAccess ? TSS_INITIAL : TSS_SORB;
 
 	state->status = TSS_INITIAL;
 	state->randomAccess = randomAccess;
