@@ -134,7 +134,8 @@
  *
  * Possible extensions:
  *
- *  As previous noted, building in a unique-ifier.
+ *  As previous noted, building in a unique-ifier. cf. state->enforceUnique
+ *  which checks rather than filtering.
  *
  *  If the input keys have a well-distributed most-significant set of bits,
  * eg text, it is possible to front-end Sorb with one stage of big-endian
@@ -226,6 +227,11 @@ bool		optimize_bounded_sort = true;
  * the heap was read from, or to hold the index of the next tuple pre-read
  * from the same tape in the case of pre-read entries.	tupindex goes unused
  * if the sort occurs entirely in memory.
+ *
+ * While running the sorb variant internal sort, next is the index in the
+ * memTuples array used for a linked-list.  We used an index rather than the
+ * more natural pointer on the assumption that the growth of memTuples may need
+ * a copy; the alternative would be a specialised copy which adjusted pointers.
  */
 typedef struct SortTuple
 {
@@ -233,7 +239,7 @@ typedef struct SortTuple
 	Datum		datum1;			/* value of first key column */
 	bool		isnull1;		/* is first key column NULL? */
 	int			tupindex;		/* see notes above */
-	struct SortTuple *next;		/* list used by the sorb method */
+	int			next;			/* list used by the sorb method */
 } SortTuple;
 
 
@@ -455,6 +461,12 @@ struct Tuplesortstate
 	int			datumTypeLen;
 	bool		datumTypeByVal;
 
+	/* These variables are specific to the sorb algorithm: */
+	int			start;
+#define NHOOKS 48;
+	int			runhooks[NHOOKS];
+	int			maxhook;
+
 	/*
 	 * Resource snapshot for time of sort start.
 	 */
@@ -637,9 +649,19 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 	 * The sorb method cannot manage random (or reverse) access; fall 
 	 * back to quicksort if needed.
 	 */
-	state->status = randomAccess ? TSS_INITIAL : TSS_SORB;
+	if (randomaccess)
+		state->status = TSS_INITIAL;
+	else
+	{
+		SortTuple * sp;
+		state->status = TSS_SORB;
+		state->start = -1;
+		for(sp = state->runhooks; sp < state->runhooks + NHOOKS; sp++)
+			*sp = -1;
+		state->maxhook= -1;
+	}
 
-	state->status = TSS_INITIAL;
+	state->status = TSS_INITIAL;		/* lose for sorb; replaced by the above */
 	state->randomAccess = randomAccess;
 	state->bounded = false;
 	state->boundUsed = false;
@@ -1268,13 +1290,168 @@ tuplesort_putdatum(Tuplesortstate *state, Datum val, bool isNull)
 }
 
 /*
+ * Convert the sorted-list output of a sorb run, sparesely resident in
+ * memtuples[], in-place into a heap.  Each tuple is marked as belonging
+ * to run number zero.
+ *
+ * Walk the list once setting up a back-link chain (for ease of swaps),
+ * then again swapping each element into a sorted array order; this is
+ * trivially a well-formed heap. N-1 swaps plus a move are needed.
+ * We don't bother checking for the swap-to-same-place case.
+ */
+static inline void
+heapify_sorted_list(struct Tuplesortstate * state)
+{
+	int j;		/* pos in heap array */
+	int i;		/* element in sorted-list */
+	SortTuple * this;	/* ditto */
+	int next;
+	SortTuple * dest;	/* element in heap */
+	SortTuple	tmp;
+	int ntuples = state->memtupcount;
+
+	state->memtupcount = 0;		/* make the heap empty */
+	for( i = state->start;
+		 (next = state->memtuples[i].next) >= 0;
+		 i = next)
+		state->memtuples[next].tupindex = i;	/* temporary use as backlink */
+
+	for( i = state->start, j = 0;
+		 (next = state->memtuples[i].next) >= 0;
+		 i = next, j++)
+	{
+		dest = &state->memtuples[j];	/* new location in heap */
+		this = &state->memtuples[i];	/* old location in list */
+		tmp = *dest;					/* make space for new heap element */
+
+		dest->tuple = this->tuple;		/* move element to heap...	*/
+		dest->datum1 = this->datum1;	/*							*/
+		dest->isnull = this->isnull;	/*							*/
+		dest->tupindex = 0;				/* ... setting run number 0	*/
+
+		state->memtuples[this]= tmp;	/* element displaced by heap */
+		state->memtuples[tmp.tupindex].next = this;
+		state->memtuples[tmp.next].tupindex = this;
+	}
+	dest = &state->memtuples[j];		/* new location in heap */
+	this = &state->memtuples[i];		/* old location in list */
+	dest->tuple = this->tuple;			/* move element to heap...	*/
+	dest->datum1 = this->datum1;		/*							*/
+	dest->isnull = this->isnull;		/*							*/
+	dest->tupindex = 0;					/* ... setting run number 0	*/
+
+	state->memtupcount = j+1;
+	Assert(state->memtupcount == ntuples);
+}
+
+/*
+ * Convert the unsorted contents of memtuples[] into a heap. Each tuple is
+ * marked as belonging to run number zero.
+ *
+ * NOTE: we pass false for checkIndex since there's no point in comparing
+ * indexes in this step, even though we do intend the indexes to be part
+ * of the sort key...
+ */
+static inline void
+heapify_unsorted_array(int ntuples)
+{
+	int j;
+	int ntuples = state->memtupcount;
+	state->memtupcount = 0;		/* make the heap empty */
+	for (j = 0; j < ntuples; j++)
+	{
+		/* Must copy source tuple to avoid possible overwrite */
+		SortTuple	stup = state->memtuples[j];
+
+		tuplesort_heap_insert(state, &stup, 0, false);
+	}
+	Assert(state->memtupcount == ntuples);
+}
+
+/*
+ * dumptuples_from_list - remove tuples from sorted list
+ * and write to tape.
+ *
+ * This is used when converting from sorb to tape-operations.
+ * Dump enough tuples to get under the availMem limit (but
+ * always leave one tuple), and to have at least one free slot
+ * in the memtuples[] array>
+ *
+ * We reduce both the memory-used and slots-used info, but do
+ * not shuffle the memtuples array down - so on exit the
+ * memtupcount does NOT indicate the first free entry.
+ */
+static void
+dumptuples_free_list(Tuplesortstate *state)
+{
+	while ((LACKMEM(state) && state->memtupcount > 1) ||
+			state->memtupcount >= state->memtupsize)
+	{
+		/* Dump the list's frontmost entry. */
+		SortTup * tp = &state->memtuples[state->start];
+
+		state->start = tp->next;
+		Assert(state->memtupcount > 0);
+		WRITETUP(state, state->tp_tapenum[state->destTape], tp);
+		--state->memtupcount;
+	}
+}
+
+/*
  * Shared code for tuple and datum cases.
+XXX change for sorb
  */
 static void
 puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 {
 	switch (state->status)
 	{
+		case TSS_SORB:
+/*XXX in progress */
+			/*
+			 * Save the tuple into the unsorted array.	First, grow the array
+			 * as needed.  Note that we try to grow the array when there is
+			 * still one free slot remaining --- if we fail, there'll still be
+			 * room to store the incoming tuple, and then we'll switch to
+			 * tape-based operation.
+			 */
+			if (state->memtupcount >= state->memtupsize - 1)
+			{
+				(void) grow_memtuples(state);
+				Assert(state->memtupcount < state->memtupsize);
+			}
+			state->memtuples[state->memtupcount++] = *tuple;
+
+			/*XXX sorb link/merge here */
+
+			/*
+			 * Done if we still fit in available memory and have array slots.
+			 */
+			if (state->memtupcount < state->memtupsize && !LACKMEM(state))
+				return;
+
+			/*XXX sorb collector here */
+
+			/*
+			 * Nope; time to switch to tape-based operation.
+			 */
+			inittapes(state);
+
+			/*
+			 * The inittapes allocated some memory for tape buffers.
+			 * Dump tuples until we are back under the limit.
+			 */
+			dumptuples_from_list(state, false);
+
+			/*
+			 * Convert the remaining contents of memtuple[] into a heap. Each tuple is
+			 * marked as belonging to run number zero.  The conversion does not
+			 * depend on memtupcount for a memmtuple[] endmark (only as a valid count)
+			 * but returns with it valid in both senses.
+			 */
+			heapify_sorted_list(state);
+			break;
+
 		case TSS_INITIAL:
 
 			/*
@@ -1327,6 +1504,11 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			 * Nope; time to switch to tape-based operation.
 			 */
 			inittapes(state);
+			/*
+			 * Convert the current contents of memtuple[] into a heap. Each tuple is
+			 * marked as belonging to run number zero.
+			 */
+			heapify_unsorted_array(ntuples)
 
 			/*
 			 * Dump tuples until we are back under the limit.
@@ -1825,6 +2007,7 @@ tuplesort_merge_order(int64 allowedMem)
 	return mOrder;
 }
 
+
 /*
  * inittapes - initialize for tape sorting.
  *
@@ -1834,7 +2017,6 @@ static void
 inittapes(Tuplesortstate *state)
 {
 	int			maxTapes,
-				ntuples,
 				j;
 	int64		tapeSpace;
 
@@ -1890,25 +2072,6 @@ inittapes(Tuplesortstate *state)
 	state->tp_runs = (int *) palloc0(maxTapes * sizeof(int));
 	state->tp_dummy = (int *) palloc0(maxTapes * sizeof(int));
 	state->tp_tapenum = (int *) palloc0(maxTapes * sizeof(int));
-
-	/*
-	 * Convert the unsorted contents of memtuples[] into a heap. Each tuple is
-	 * marked as belonging to run number zero.
-	 *
-	 * NOTE: we pass false for checkIndex since there's no point in comparing
-	 * indexes in this step, even though we do intend the indexes to be part
-	 * of the sort key...
-	 */
-	ntuples = state->memtupcount;
-	state->memtupcount = 0;		/* make the heap empty */
-	for (j = 0; j < ntuples; j++)
-	{
-		/* Must copy source tuple to avoid possible overwrite */
-		SortTuple	stup = state->memtuples[j];
-
-		tuplesort_heap_insert(state, &stup, 0, false);
-	}
-	Assert(state->memtupcount == ntuples);
 
 	state->currentRun = 0;
 
@@ -2350,6 +2513,7 @@ mergeprereadone(Tuplesortstate *state, int srcTape)
 	state->availMem = priorAvail - spaceUsed;
 }
 
+
 /*
  * dumptuples - remove tuples from heap and write to tape
  *
@@ -2548,6 +2712,12 @@ tuplesort_get_stats(Tuplesortstate *state,
 
 	switch (state->status)
 	{
+		case TSS_SORB:
+			if (state->boundUsed)
+				*sortMethod = "top-N internal merge";
+			else
+				*sortMethod = "internal merge";
+			break;
 		case TSS_SORTEDINMEM:
 			if (state->boundUsed)
 				*sortMethod = "top-N heapsort";
@@ -3533,3 +3703,7 @@ free_sort_tuple(Tuplesortstate *state, SortTuple *stup)
 	FREEMEM(state, GetMemoryChunkSpace(stup->tuple));
 	pfree(stup->tuple);
 }
+
+/*
+ * vi: ts=4 sw=4 ai aw
+ */
