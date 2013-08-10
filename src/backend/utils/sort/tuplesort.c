@@ -191,6 +191,10 @@
 #include "utils/sortsupport.h"
 #include "utils/tuplesort.h"
 
+#ifndef nelements
+# define nelements(arr) ( sizeof(arr) / sizeof(*arr) )
+#endif
+
 
 /* sort-type codes for sort__start probes */
 #define HEAP_SORT		0
@@ -471,7 +475,7 @@ struct Tuplesortstate
 
 	/* These variables are specific to the sorb algorithm: */
 	int			start;
-#define NHOOKS 48;
+#define NHOOKS 40
 	int			runhooks[NHOOKS];
 	int			list_end[NHOOKS];
 	int			maxhook;
@@ -656,11 +660,11 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 #endif
 
 	{
-		SortTuple * sp;
+		int * hp;
 		state->status = TSS_SORB;
 		state->start = -1;
-		for(sp = state->runhooks; sp < state->runhooks + NHOOKS; sp++)
-			*sp = -1;
+		for(hp = state->runhooks; hp < state->runhooks + NHOOKS; hp++)
+			*hp = -1;
 		state->maxhook= -1;
 	}
 
@@ -1383,9 +1387,9 @@ sorb_link(struct Tuplesortstate * state, int new)
 				if( state->bounded  &&  1 == state->bound )
 				{	/* run already longer than required; drop the head one */
 					free_sort_tuple(state, &state->memtuples[head]);
-					state->memtuples[head].tuple = state->memtuples[new].tuple
-					state->memtuples[head].datum1 = state->memtuples[new].datum1
-					state->memtuples[head].isnull1 = state->memtuples[new].isnull1
+					state->memtuples[head].tuple = state->memtuples[new].tuple;
+					state->memtuples[head].datum1 = state->memtuples[new].datum1;
+					state->memtuples[head].isnull1 = state->memtuples[new].isnull1;
 					state->memtupcount = new-1;
 				}
 				else
@@ -1446,7 +1450,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 			int hook;
 			int start = state-> runhooks[0];
 			for ( hook = 1;
-				  state->runhooks[hook] >= 0  &&  hook <= state-> maxhook + 1
+				  state->runhooks[hook] >= 0  &&  hook <= state-> maxhook + 1;
 				  hook++ )
 			{
 				start = sorb_merge(state, state->runhooks[hook], start);
@@ -1474,7 +1478,7 @@ sorb_collector(struct Tuplesortstate * state)
 		hook++;
 	start = state->runhooks[hook];
 	while( ++hook < state->maxhook )
-		if( state->runhook[hook] != -1 )
+		if( state->runhooks[hook] != -1 )
 			start = sorb_merge(state, state->runhooks[hook], start);
 	return start;
 }
@@ -1516,21 +1520,22 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 
 		dest->tuple = this->tuple;		/* move element to heap...	*/
 		dest->datum1 = this->datum1;	/*							*/
-		dest->isnull = this->isnull;	/*							*/
+		dest->isnull1 = this->isnull1;	/*							*/
 		dest->tupindex = 0;				/* ... setting run number 0	*/
 
-		state->memtuples[this]= tmp;	/* element displaced by heap */
-		state->memtuples[tmp.prev].next = this;
-		state->memtuples[tmp.next].prev = this;
+		*this = tmp;					/* element displaced by heap */
+		state->memtuples[tmp.prev].next = j;
+		state->memtuples[tmp.next].prev = j;
 	}
 	dest = &state->memtuples[j];		/* new location in heap */
 	this = &state->memtuples[i];		/* old location in list */
 	dest->tuple = this->tuple;			/* move element to heap...	*/
 	dest->datum1 = this->datum1;		/*							*/
-	dest->isnull = this->isnull;		/*							*/
+	dest->isnull1 = this->isnull1;		/*							*/
 	dest->tupindex = 0;					/* ... setting run number 0	*/
 
 	state->memtupcount = j+1;
+	ntuples = ntuples;				/* quieten compiler */
 	Assert(state->memtupcount == ntuples);
 }
 
@@ -1540,11 +1545,12 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 static inline void
 sorb_reverse_chain(struct Tuplesortstate * state)
 {
-	int i;
-	for( i = state->start;
-		 (next = state->memtuples[i].next) >= 0;
-		 i = next)
-		state->memtuples[next].prev = i;
+	int this = state->start;
+	int next;
+
+	state->memtuples[this].prev = -1;
+	for (; (next = state->memtuples[this].next) >= 0; this = next)
+		state->memtuples[next].prev = this;
 }
 
 /*
@@ -1556,7 +1562,7 @@ sorb_reverse_chain(struct Tuplesortstate * state)
  * of the sort key...
  */
 static inline void
-heapify_unsorted_array(int ntuples)
+heapify_unsorted_array(Tuplesortstate * state)
 {
 	int j;
 	int ntuples = state->memtupcount;
@@ -1591,7 +1597,7 @@ dumptuples_from_list(Tuplesortstate * state, int start)
 			state->memtupcount >= state->memtupsize)
 	{
 		/* Dump the list's frontmost entry. */
-		SortTup * tp = &state->memtuples[start];
+		SortTuple * tp = &state->memtuples[start];
 
 		start = tp->next;
 		Assert(state->memtupcount > 0);
@@ -1730,11 +1736,12 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			 * Nope; time to switch to tape-based operation.
 			 */
 			inittapes(state);
+
 			/*
 			 * Convert the current contents of memtuple[] into a heap. Each tuple is
 			 * marked as belonging to run number zero.
 			 */
-			heapify_unsorted_array(ntuples)
+			heapify_unsorted_array(state);
 
 			/*
 			 * Dump tuples until we are back under the limit.
@@ -1825,7 +1832,7 @@ tuplesort_performsort(Tuplesortstate *state)
 			state->eof_reached = false;
 			state->markpos_eof = false;
 
-			if(state->randomAcess)
+			if(state->randomAccess)
 				sorb_reverse_chain(state);
 			break;
 
