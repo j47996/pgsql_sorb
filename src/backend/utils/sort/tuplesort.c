@@ -111,8 +111,11 @@
  *   is a performance issue.
  * + Handling of unique output could likewise be done during the sort if
  *   there are use cases.
- * - Random-access and reverse access are not supported.  To do so we would
- *   need to materialize the output linked-list into an array.
+ * - Random-access and reverse access are not supported.  Random would
+ *   need to materialize the output linked-list into an array; reverse
+ *   could be done with a double-linked list (XXX we already need that
+ *   for the transition to heap for the external sort, so the space is
+ *   committed; consider for future).
  *
  * Internals:
  *  Sorb runs in three phases.
@@ -232,6 +235,8 @@ bool		optimize_bounded_sort = true;
  * memTuples array used for a linked-list.  We used an index rather than the
  * more natural pointer on the assumption that the growth of memTuples may need
  * a copy; the alternative would be a specialised copy which adjusted pointers.
+ * For the transition from sorb to tapes, we use tupindex as a reverse pointer
+ * in the sorb list.
  */
 typedef struct SortTuple
 {
@@ -649,6 +654,7 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 
 	/*
 	 * The sorb method cannot manage random (or reverse) access; fall 
+	 XXX where is reverse-access handled?
 	 * back to quicksort if needed.
 	 */
 	if (randomaccess)
@@ -663,7 +669,7 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 		state->maxhook= -1;
 	}
 
-	state->status = TSS_INITIAL;		/* lose for sorb; replaced by the above */
+	state->status = TSS_INITIAL;		/* XXX lose for sorb; replaced by the above */
 	state->randomAccess = randomAccess;
 	state->bounded = false;
 	state->boundUsed = false;
@@ -1296,6 +1302,7 @@ static int
 sorb_merge(struct Tuplesortstate * state, int old, int new)
 {
 	int start, end;
+	int cnt = 1;
 
 	if( COMPARETUP(state, &state->memtuples[old], &state->memtuples[new]) > 0 )
 	{
@@ -1307,8 +1314,14 @@ sorb_merge(struct Tuplesortstate * state, int old, int new)
 old_lower:
 	do {
 		end = old;
+		if( state->bounded  &&  ++cnt > state->bound )
+			goto bound_reached;
 		if( (old = state->memtuples[old].next) == -1 )
 		{
+			/* If bounded, we could walk the "new" list counting,	 */
+			/* and trim once it went over the bound - but we're not  */
+			/* doing any more comparisons so probably not worthwhile */
+			/* here (unless memory is under pressure?)				 */
 			state->memtuples[end].next = new;
 			return start;
 		}
@@ -1319,6 +1332,8 @@ old_lower:
 new_lower:
 	do {
 		end = new;
+		if( state->bounded  &&  ++cnt > state->bound )
+			goto bound_reached;
 		if( (new = state->memtuples[new].next) == -1 )
 		{
 			state->memtuples[end].next = old;
@@ -1329,7 +1344,16 @@ new_lower:
 	state->memtuples[end].next = old;
 	goto old_lower;
 
-	/*NOTREACHED*/
+bound_reached:
+	state->memtuples[end].next = -1;
+	/* We can free up the tuple memory, but not the SortTuple structs. */
+	/* Could potentially build a freelist of them, used preferentially */
+	/* for new tuples.												   */
+	while( (old = state->memtuples[old].next) != -1 )
+		free_sort_tuple(state, &state->memtuples[old]);
+	while( (new = state->memtuples[new].next) != -1 )
+		free_sort_tuple(state, &state->memtuples[new]);
+	return start;
 }
 
 /*
@@ -1340,52 +1364,88 @@ new_lower:
 static inline void
 sorb_link(struct Tuplesortstate * state, int new)
 {
-	int old = state->runhooks[0];
+	int head = state->runhooks[0];
+	int end = state->list_end[0];
 
-	if ( old >= -1 )
+	if ( head >= -1 )
 	{	/* not 1st ever tuple */
 
-		if( state->memtuples[old].next == -1 )
+		if( state->memtuples[head].next == -1 )
 		{	/* 2nd in run; can never be wrong direction */
-			if( (state->run_up = (COMPARETUP(state,
-						&state->memtuples[old], &state->memtuples[new]) <= 0)) )
-			{	/* Non-descending order run */
-				state->memtuples[new].next = -1;
-				state->memtuples[old].next = state->list_end[0] = new;
-			}
-			else
-			{	/* Descending-order run */
-				state->memtuples[new].next = old;
-				state->runhooks[0] = new;
-			}
+			if( (state->run_up = (COMPARETUP(state, &state->memtuples[head],
+												&state->memtuples[new]) <= 0)) )
+				/* Non-descending order run */
+				if( state->bounded  &&  1 == state->bound )
+				{	/* run already longer than required; drop the new one */
+					free_sort_tuple(state, &state->memtuples[new]);
+					state->memtupcount = new-1;
+				}
+				else
+				{
+					state->memtuples[new].next = -1;
+					state->memtuples[head].next = state->list_end[0] = new;
+				}
+			else /* Descending-order run */
+				if( state->bounded  &&  1 == state->bound )
+				{	/* run already longer than required; drop the head one */
+					free_sort_tuple(state, &state->memtuples[head]);
+					state->memtuples[head].tuple = state->memtuples[new].tuple
+					state->memtuples[head].datum1 = state->memtuples[new].datum1
+					state->memtuples[head].isnull1 = state->memtuples[new].isnull1
+					state->memtupcount = new-1;
+				}
+				else
+				{
+					state->memtuples[new].next = head;
+					state->runhooks[0] = new;
+				}
 			return;	/* 2-element list is on hook 0 */
 		}
 
 		/* run direction established */
 		if( state->run_up )
 		{	/* Non-descending order run */
-			if( (COMPARETUP(state, &state->memtuples[old],
+			if( (COMPARETUP(state, &state->memtuples[end],
 								   &state->memtuples[new]) <= 0) )
-			{	/* new tuple extands run */
-				state->memtuples[new].next = -1;
-				state->memtuples[old].next = state->list_end[0] = new;
-				return;	/* >2 element list, on hook 0 */
+			{	/* new tuple extends run */
+				if( state->bounded  &&  new+1-head > state->bound )
+				{	/* run now longer than required; drop the new one */
+					free_sort_tuple(state, &state->memtuples[new]);
+					state->memtupcount = new-1;
+				}
+				else
+				{
+					state->memtuples[new].next = -1;
+					state->memtuples[head].next = state->list_end[0] = new;
+				}
+				return;	/* >=2 element list, on hook 0 */
 			}
 		}
 		else
 		{	/* Descending-order run */
-			if( (COMPARETUP(state, &state->memtuples[old],
+			if( (COMPARETUP(state, &state->memtuples[head],
 								   &state->memtuples[new]) > 0) )
-			{	/* new tuple extands run */
-				state->memtuples[new].next = old;
+			{	/* new tuple extends run */
+				state->memtuples[new].next = head;
 				state->runhooks[0] = new;
-				return;	/* >2 element list, on hook 0 */
+
+				if( state->bounded  &&  new+1-end > state->bound )
+				{	/* run now longer than required; drop the largest one */
+					free_sort_tuple(state, &state->memtuples[end]);
+
+					/* hmm, has this gotten expensive? */
+					memmove( &state->memtuples[end], &state->memtuples[end+1],
+						(new-end)*sizeof(SortTuple) );
+					state->memtuples[end].next = -1;
+					state->memtupcount = new-1;
+				}
+				return;	/* >=2 element list, on hook 0 */
 			}
 		}
 
 		/*
 		 * The new tuple breaks the current run.
-		 * Merge the run to free hook zero, the place the tuple
+		 * Merge the run to free hook zero, then place the tuple
 		 * as first in a new run onto it.
 		 */
 		{
@@ -1543,6 +1603,8 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 	switch (state->status)
 	{
 		case TSS_SORB:
+		{
+			int sorb_start;
 			/*
 			 * Save the tuple into the unsorted array.	First, grow the array
 			 * as needed.  Note that we try to grow the array when there is
@@ -1566,7 +1628,7 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 				(void) grow_memtuples(state);
 				Assert(state->memtupcount < state->memtupsize);
 			}
-			state->memtuples[(sorb_start = state->memtupcount)++] = *tuple;
+			state->memtuples[(sorb_start = state->memtupcount++)] = *tuple;
 
 			/* 1st & 2nd sorb stages */
 			sorb_link(state, sorb_start);
@@ -1604,6 +1666,7 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			 */
 			heapify_sorted_list(state, sorb_start);
 			break;
+		}
 
 		case TSS_INITIAL:
 
@@ -1743,6 +1806,22 @@ tuplesort_performsort(Tuplesortstate *state)
 
 	switch (state->status)
 	{
+		case TSS_SORB:
+		{
+			int sorb_start;
+
+			/* 3rd (final) sorb stage */
+			sorb_start = sorb_collector(state);
+
+			/* XXX TODO */
+			/*
+			 * Notification at setup of random access causes us to not use sorb.
+			 * If we wanted to support full random access (is this used?)
+			 * we would need a materialize (eg. heapify_sorted_list()) here.
+			 */
+			break;
+		}
+
 		case TSS_INITIAL:
 
 			/*
@@ -1833,6 +1912,18 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 
 	switch (state->status)
 	{
+		case TSS_SORB:
+			/*XXX TODO */
+			/*
+			 * Apparently backward requires notification at setup of
+			 * random access, which causes us to not use sorb.
+			 * If we wanted to support reverse we would need to build
+			 * a reverse chain (use the tupindex element).  Full random
+			 * access would need a materialize (heapify_sorted_list())
+			 */
+			Assert(forward);
+			break;
+
 		case TSS_SORTEDINMEM:
 			Assert(forward || state->randomAccess);
 			*should_free = false;
