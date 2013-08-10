@@ -93,7 +93,8 @@
  *
  * As an alternate to the quicksort core used for the internal sort we
  * can use "Sorb".  This is an internal merge sort, with optimal merge
- * scheduling.  The algothithm is from <ref>.
+ * scheduling.
+ * The algothithm is from Software Development International, Winter 1991.
  *
  * Characteristics:
  * + The sort is progressive, stable and comparison-based.
@@ -110,12 +111,13 @@
  *   replicas with/without bounding if the repeated testing of the feature
  *   is a performance issue.
  * + Handling of unique output could likewise be done during the sort if
- *   there are use cases.
- * - Random-access and reverse access are not supported.  Random would
- *   need to materialize the output linked-list into an array; reverse
- *   could be done with a double-linked list (XXX we already need that
- *   for the transition to heap for the external sort, so the space is
- *   committed; consider for future).
+ *   there are use cases (the existing module interface does not support this).
+ *
+ * Random-access is limited in this module to rescan, mark- and restore-pos,
+ * and reverse-access read.  We can handle all but the last easily; the
+ * reverse-read requires a reverse-linked list.  This is built any time
+ * random is requested (we might consider doing it only on the first
+ * reverse access).
  *
  * Internals:
  *  Sorb runs in three phases.
@@ -247,6 +249,7 @@ typedef struct SortTuple
 	int			next;			/* list used by the sorb method */
 } SortTuple;
 
+#define prev tupindex
 
 /*
  * Possible states of a Tuplesort object.  These denote the states that
@@ -652,14 +655,6 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 		pg_rusage_init(&state->ru_start);
 #endif
 
-	/*
-	 * The sorb method cannot manage random (or reverse) access; fall 
-	 XXX where is reverse-access handled?
-	 * back to quicksort if needed.
-	 */
-	if (randomaccess)
-		state->status = TSS_INITIAL;
-	else
 	{
 		SortTuple * sp;
 		state->status = TSS_SORB;
@@ -669,7 +664,6 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 		state->maxhook= -1;
 	}
 
-	state->status = TSS_INITIAL;		/* XXX lose for sorb; replaced by the above */
 	state->randomAccess = randomAccess;
 	state->bounded = false;
 	state->boundUsed = false;
@@ -1486,7 +1480,7 @@ sorb_collector(struct Tuplesortstate * state)
 }
 
 /*
- * Convert the sorted-list output of a sorb run, sparesely resident in
+ * Convert the sorted-list output of a sorb run, sparsely resident in
  * memtuples[], in-place into a heap.  Each tuple is marked as belonging
  * to run number zero.
  *
@@ -1503,19 +1497,19 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 	SortTuple * this;	/* ditto */
 	int next;
 	SortTuple * dest;	/* element in heap */
-	SortTuple	tmp;
 	int ntuples = state->memtupcount;
 
 	state->memtupcount = 0;		/* make the heap empty */
 	for( i = start;
 		 (next = state->memtuples[i].next) >= 0;
 		 i = next)
-		state->memtuples[next].tupindex = i;	/* temporary use as backlink */
+		state->memtuples[next].prev = i;	/* temporary use as backlink */
 
 	for( i = start, j = 0;
 		 (next = state->memtuples[i].next) >= 0;
 		 i = next, j++)
 	{
+		SortTuple	tmp;
 		dest = &state->memtuples[j];	/* new location in heap */
 		this = &state->memtuples[i];	/* old location in list */
 		tmp = *dest;					/* make space for new heap element */
@@ -1526,8 +1520,8 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		dest->tupindex = 0;				/* ... setting run number 0	*/
 
 		state->memtuples[this]= tmp;	/* element displaced by heap */
-		state->memtuples[tmp.tupindex].next = this;
-		state->memtuples[tmp.next].tupindex = this;
+		state->memtuples[tmp.prev].next = this;
+		state->memtuples[tmp.next].prev = this;
 	}
 	dest = &state->memtuples[j];		/* new location in heap */
 	this = &state->memtuples[i];		/* old location in list */
@@ -1538,6 +1532,19 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 
 	state->memtupcount = j+1;
 	Assert(state->memtupcount == ntuples);
+}
+
+/*
+ * Walk the list setting up a back-link chain (for reverse access).
+ */
+static inline void
+sorb_reverse_chain(struct Tuplesortstate * state)
+{
+	int i;
+	for( i = state->start;
+		 (next = state->memtuples[i].next) >= 0;
+		 i = next)
+		state->memtuples[next].prev = i;
 }
 
 /*
@@ -1584,7 +1591,7 @@ dumptuples_from_list(Tuplesortstate * state, int start)
 			state->memtupcount >= state->memtupsize)
 	{
 		/* Dump the list's frontmost entry. */
-		SortTup * tp = &state->memtuples[state->start];
+		SortTup * tp = &state->memtuples[start];
 
 		start = tp->next;
 		Assert(state->memtupcount > 0);
@@ -1604,7 +1611,7 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 	{
 		case TSS_SORB:
 		{
-			int sorb_start;
+			int item;
 			/*
 			 * Save the tuple into the unsorted array.	First, grow the array
 			 * as needed.  Note that we try to grow the array when there is
@@ -1628,10 +1635,10 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 				(void) grow_memtuples(state);
 				Assert(state->memtupcount < state->memtupsize);
 			}
-			state->memtuples[(sorb_start = state->memtupcount++)] = *tuple;
+			state->memtuples[(item = state->memtupcount++)] = *tuple;
 
 			/* 1st & 2nd sorb stages */
-			sorb_link(state, sorb_start);
+			sorb_link(state, item);
 
 			/*
 			 * Done if we still fit in available memory and have array slots,
@@ -1641,13 +1648,16 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			   && !LACKMEM(state)
 			   && state->maxhook < nelements(state->runhooks)
 			   )
-				return;
-
-			/* 3rd (final) sorb stage */
-			sorb_start = sorb_collector(state);
+				break;
 
 			/*
 			 * Nope; time to switch to tape-based operation.
+			 * 3rd (final) sorb stage: merge all intermediate lists to one.
+			 */
+			state->start = sorb_collector(state);
+
+			/*
+			 * Set up for tape-based operation.
 			 * Moves state to TSS_BUILDRUNS.
 			 */
 			inittapes(state);
@@ -1656,7 +1666,7 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			 * The inittapes allocated some memory for tape buffers.
 			 * Dump tuples until we are back under the limit.
 			 */
-			sorb_start = dumptuples_from_list(state, sorb_start);
+			state->start = dumptuples_from_list(state, state->start);
 
 			/*
 			 * Convert the remaining contents of memtuple[] into a heap. Each
@@ -1664,7 +1674,7 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			 * does not depend on memtupcount for a memmtuple[] endmark (only
 			 * as a valid count) but returns with it valid in both senses.
 			 */
-			heapify_sorted_list(state, sorb_start);
+			heapify_sorted_list(state, state->start);
 			break;
 		}
 
@@ -1807,20 +1817,17 @@ tuplesort_performsort(Tuplesortstate *state)
 	switch (state->status)
 	{
 		case TSS_SORB:
-		{
-			int sorb_start;
+			/* 3rd (final) sorb stage: merge all intermediate lists to one */
+			state->current =
+			state->markpos_offset =
+			state->start = sorb_collector(state);
 
-			/* 3rd (final) sorb stage */
-			sorb_start = sorb_collector(state);
+			state->eof_reached = false;
+			state->markpos_eof = false;
 
-			/* XXX TODO */
-			/*
-			 * Notification at setup of random access causes us to not use sorb.
-			 * If we wanted to support full random access (is this used?)
-			 * we would need a materialize (eg. heapify_sorted_list()) here.
-			 */
+			if(state->randomAcess)
+				sorb_reverse_chain(state);
 			break;
-		}
 
 		case TSS_INITIAL:
 
@@ -1913,15 +1920,45 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 	switch (state->status)
 	{
 		case TSS_SORB:
-			/*XXX TODO */
-			/*
-			 * Apparently backward requires notification at setup of
-			 * random access, which causes us to not use sorb.
-			 * If we wanted to support reverse we would need to build
-			 * a reverse chain (use the tupindex element).  Full random
-			 * access would need a materialize (heapify_sorted_list())
-			 */
-			Assert(forward);
+			Assert(forward || state->randomAccess);
+			*should_free = false;
+			if (forward)
+			{
+				if (state->current >= 0)
+				{
+					SortTuple tup = state->memtuples[state->current];
+					*stup = tup;
+					state->current = tup.next;
+					return true;
+				}
+				state->eof_reached = true;
+
+				/* No obvious way to check for over-read bounded sort. */
+				return false;
+			}
+			else
+			{
+				int item = state->current;
+
+				if (item == state->start)
+					return false;
+
+				/*
+				 * if all tuples are fetched already then we return last
+				 * tuple, else - tuple before last returned.
+				 */
+				if (state->eof_reached)
+					state->eof_reached = false;
+				else
+				{
+					item = state->current = state->memtuples[item].prev;
+					if (item == state->start)
+						return false;
+				}
+				item = state->memtuples[item].prev;
+				*stup = state->memtuples[item];
+				return true;
+			}
 			break;
 
 		case TSS_SORTEDINMEM:
@@ -2834,6 +2871,10 @@ tuplesort_rescan(Tuplesortstate *state)
 
 	switch (state->status)
 	{
+		case TSS_SORB:
+			state->current = state->markpos_offset = state->start;
+			state->eof_reached = state->markpos_eof = false;
+			break;
 		case TSS_SORTEDINMEM:
 			state->current = 0;
 			state->eof_reached = false;
@@ -2869,6 +2910,7 @@ tuplesort_markpos(Tuplesortstate *state)
 
 	switch (state->status)
 	{
+		case TSS_SORB:
 		case TSS_SORTEDINMEM:
 			state->markpos_offset = state->current;
 			state->markpos_eof = state->eof_reached;
@@ -2901,6 +2943,7 @@ tuplesort_restorepos(Tuplesortstate *state)
 
 	switch (state->status)
 	{
+		case TSS_SORB:
 		case TSS_SORTEDINMEM:
 			state->current = state->markpos_offset;
 			state->eof_reached = state->markpos_eof;
