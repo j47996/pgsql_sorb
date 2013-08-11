@@ -1425,9 +1425,6 @@ sorb_link(struct Tuplesortstate * state, int new)
 			if( (COMPARETUP(state, &state->memtuples[head],
 								   &state->memtuples[new]) > 0) )
 			{	/* new tuple extends run */
-				state->memtuples[new].next = head;
-				state->runhooks[0] = new;
-
 				end = state->list_end[0];
 				if( state->bounded  &&  new+1-end > state->bound )
 				{	/* run now longer than required; drop the largest one */
@@ -1437,8 +1434,11 @@ sorb_link(struct Tuplesortstate * state, int new)
 					memmove( &state->memtuples[end], &state->memtuples[end+1],
 						(new-end)*sizeof(SortTuple) );
 					state->memtuples[end].next = -1;
-					state->memtupcount = new-1;
+					new = state->memtupcount = new-1;
 				}
+
+				state->memtuples[new].next = head;
+				state->runhooks[0] = new;
 				return;	/* >=2 element list, on hook 0 */
 			}
 		}
@@ -1481,8 +1481,8 @@ sorb_collector(struct Tuplesortstate * state)
 	while( state->runhooks[hook] == -1 )
 		hook++;
 	start = state->runhooks[hook];
-	while( ++hook < state->maxhook )
-		if( state->runhooks[hook] != -1 )
+	while( ++hook <= state->maxhook )
+		if( state->runhooks[hook] >= 0 )
 			start = sorb_merge(state, state->runhooks[hook], start);
 	return start;
 }
