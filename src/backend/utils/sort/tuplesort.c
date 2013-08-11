@@ -665,7 +665,7 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 		state->start = -1;
 		for(hp = state->runhooks; hp < state->runhooks + NHOOKS; hp++)
 			*hp = -1;
-		state->maxhook= -1;
+		state->maxhook= 0;
 	}
 
 	state->randomAccess = randomAccess;
@@ -1363,9 +1363,9 @@ static inline void
 sorb_link(struct Tuplesortstate * state, int new)
 {
 	int head = state->runhooks[0];
-	int end = state->list_end[0];
+	int end;
 
-	if ( head >= -1 )
+	if ( head >= 0 )
 	{	/* not 1st ever tuple */
 
 		if( state->memtuples[head].next == -1 )
@@ -1403,6 +1403,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 		/* run direction established */
 		if( state->run_up )
 		{	/* Non-descending order run */
+			end = state->list_end[0];
 			if( (COMPARETUP(state, &state->memtuples[end],
 								   &state->memtuples[new]) <= 0) )
 			{	/* new tuple extends run */
@@ -1414,7 +1415,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 				else
 				{
 					state->memtuples[new].next = -1;
-					state->memtuples[head].next = state->list_end[0] = new;
+					state->memtuples[end].next = state->list_end[0] = new;
 				}
 				return;	/* >=2 element list, on hook 0 */
 			}
@@ -1427,6 +1428,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 				state->memtuples[new].next = head;
 				state->runhooks[0] = new;
 
+				end = state->list_end[0];
 				if( state->bounded  &&  new+1-end > state->bound )
 				{	/* run now longer than required; drop the largest one */
 					free_sort_tuple(state, &state->memtuples[end]);
@@ -1448,16 +1450,16 @@ sorb_link(struct Tuplesortstate * state, int new)
 		 */
 		{
 			int hook;
-			int start = state-> runhooks[0];
+			int start = state->runhooks[0];
 			for ( hook = 1;
-				  state->runhooks[hook] >= 0  &&  hook <= state-> maxhook + 1;
+				  state->runhooks[hook] >= 0  &&  hook <= state->maxhook + 1;
 				  hook++ )
 			{
 				start = sorb_merge(state, state->runhooks[hook], start);
 				state->runhooks[hook] = -1;
 			}
 			state->runhooks[hook] = start;
-			if( hook > state-> maxhook )
+			if( hook > state->maxhook )
 				state->maxhook = hook;
 		}
 	}
@@ -1474,6 +1476,8 @@ sorb_collector(struct Tuplesortstate * state)
 	int hook = 0;
 	int start;
 
+	if( state->memtupcount == 0 )
+		return -1;
 	while( state->runhooks[hook] == -1 )
 		hook++;
 	start = state->runhooks[hook];
@@ -1503,6 +1507,8 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 	SortTuple * dest;	/* element in heap */
 	int ntuples = state->memtupcount;
 
+	if( state->memtupcount == 0 )
+		return;
 	state->memtupcount = 0;		/* make the heap empty */
 	for( i = start;
 		 (next = state->memtuples[i].next) >= 0;
