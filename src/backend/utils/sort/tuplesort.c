@@ -1300,7 +1300,8 @@ static int
 sorb_merge(struct Tuplesortstate * state, int old, int new)
 {
 	int start, end;
-	int cnt = 1;
+	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
+	unsigned cnt = 1;
 
 	if( COMPARETUP(state, &state->memtuples[old], &state->memtuples[new]) > 0 )
 	{
@@ -1312,17 +1313,20 @@ sorb_merge(struct Tuplesortstate * state, int old, int new)
 old_lower:
 	do {
 		end = old;
-		if( (old = state->memtuples[old].next) == -1 )
+		old = state->memtuples[old].next;
+		if( cnt++ >= bound )
+			goto bound_reached;
+		if( old == -1 )	/* Just link "new" list on the end */
 		{
-			/* If bounded, we could walk the "new" list counting,	 */
-			/* and trim once it went over the bound - but we're not  */
-			/* doing any more comparisons so probably not worthwhile */
-			/* here (unless memory is under pressure?)				 */
+			/*
+			 * If bounded but not yet there, we could walk the "new"
+			 * list counting, and trim once it went over the bound -
+			 * but we're not doing any more comparisons so probably
+			 * not worthwhile here (unless memory is under pressure?)
+			 */
 			state->memtuples[end].next = new;
 			return start;
 		}
-		if( state->bounded  &&  ++cnt > state->bound )
-			goto bound_reached;
 	} while( COMPARETUP(state, &state->memtuples[old],
 							   &state->memtuples[new]) <= 0 );
 	state->memtuples[end].next = new;
@@ -1330,13 +1334,14 @@ old_lower:
 new_lower:
 	do {
 		end = new;
-		if( (new = state->memtuples[new].next) == -1 )
+		new = state->memtuples[new].next;
+		if( cnt++ >= bound )
+			goto bound_reached;
+		if( new == -1 )	/* Just link the "old" list on the end */
 		{
 			state->memtuples[end].next = old;
 			return start;
 		}
-		if( state->bounded  &&  ++cnt > state->bound )
-			goto bound_reached;
 	} while( COMPARETUP(state, &state->memtuples[old],
 							   &state->memtuples[new]) > 0 );
 	state->memtuples[end].next = old;
