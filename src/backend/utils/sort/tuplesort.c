@@ -1496,6 +1496,7 @@ sorb_collector(struct Tuplesortstate * state)
  * then again swapping each element into a sorted array order; this is
  * trivially a well-formed heap. N-1 swaps plus a move are needed.
  * We don't bother checking for the swap-to-same-place case.
+ *XXX could we do some of the back-link work in the final collector merge?
  */
 static inline void
 heapify_sorted_list(struct Tuplesortstate * state, int start)
@@ -1520,6 +1521,7 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		 i = next, j++)
 	{
 		SortTuple	tmp;
+		Assert(j <= i);
 		dest = &state->memtuples[j];	/* new location in heap */
 		this = &state->memtuples[i];	/* old location in list */
 		tmp = *dest;					/* make space for new heap element */
@@ -1530,8 +1532,8 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		dest->tupindex = 0;				/* ... setting run number 0	*/
 
 		*this = tmp;					/* element displaced by heap */
-		state->memtuples[tmp.prev].next = j;
-		state->memtuples[tmp.next].prev = j;
+		state->memtuples[tmp.prev].next = i;
+		state->memtuples[tmp.next].prev = i;
 	}
 	dest = &state->memtuples[j];		/* new location in heap */
 	this = &state->memtuples[i];		/* old location in list */
