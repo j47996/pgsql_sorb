@@ -1312,8 +1312,6 @@ sorb_merge(struct Tuplesortstate * state, int old, int new)
 old_lower:
 	do {
 		end = old;
-		if( state->bounded  &&  ++cnt > state->bound )
-			goto bound_reached;
 		if( (old = state->memtuples[old].next) == -1 )
 		{
 			/* If bounded, we could walk the "new" list counting,	 */
@@ -1323,6 +1321,8 @@ old_lower:
 			state->memtuples[end].next = new;
 			return start;
 		}
+		if( state->bounded  &&  ++cnt > state->bound )
+			goto bound_reached;
 	} while( COMPARETUP(state, &state->memtuples[old],
 							   &state->memtuples[new]) <= 0 );
 	state->memtuples[end].next = new;
@@ -1330,13 +1330,13 @@ old_lower:
 new_lower:
 	do {
 		end = new;
-		if( state->bounded  &&  ++cnt > state->bound )
-			goto bound_reached;
 		if( (new = state->memtuples[new].next) == -1 )
 		{
 			state->memtuples[end].next = old;
 			return start;
 		}
+		if( state->bounded  &&  ++cnt > state->bound )
+			goto bound_reached;
 	} while( COMPARETUP(state, &state->memtuples[old],
 							   &state->memtuples[new]) > 0 );
 	state->memtuples[end].next = old;
@@ -1347,10 +1347,16 @@ bound_reached:
 	/* We can free up the tuple memory, but not the SortTuple structs. */
 	/* Could potentially build a freelist of them, used preferentially */
 	/* for new tuples.												   */
-	while( (old = state->memtuples[old].next) != -1 )
+	while( old != -1 )
+	{
 		free_sort_tuple(state, &state->memtuples[old]);
-	while( (new = state->memtuples[new].next) != -1 )
+		old = state->memtuples[old].next;
+	}
+	while( new != -1 )
+	{
 		free_sort_tuple(state, &state->memtuples[new]);
+		new = state->memtuples[new].next;
+	}
 	return start;
 }
 
@@ -1508,7 +1514,7 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 	SortTuple * dest;	/* element in heap */
 	int ntuples = state->memtupcount;
 
-	if( state->memtupcount == 0 )
+	if( ntuples == 0 )
 		return;
 	state->memtupcount = 0;		/* make the heap empty */
 	for( i = start;
@@ -1543,7 +1549,6 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 	dest->tupindex = 0;					/* ... setting run number 0	*/
 
 	state->memtupcount = j+1;
-	ntuples = ntuples;				/* quieten compiler */
 	Assert(state->memtupcount == ntuples);
 }
 
