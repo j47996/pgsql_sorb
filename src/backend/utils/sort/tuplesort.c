@@ -1554,9 +1554,12 @@ sorb_reverse_chain(struct Tuplesortstate * state)
 	int this = state->start;
 	int next;
 
-	state->memtuples[this].prev = -1;
-	for (; (next = state->memtuples[this].next) >= 0; this = next)
-		state->memtuples[next].prev = this;
+	if (this >= 0)
+	{
+		state->memtuples[this].prev = -1;
+		for (; (next = state->memtuples[this].next) >= 0; this = next)
+			state->memtuples[next].prev = this;
+	}
 }
 
 /*
