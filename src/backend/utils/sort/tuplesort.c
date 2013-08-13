@@ -976,7 +976,7 @@ void
 tuplesort_set_bound(Tuplesortstate *state, int64 bound)
 {
 	/* Assert we're called before loading any tuples */
-	Assert(state->status == TSS_INITIAL);
+	Assert(state->status == TSS_INITIAL || state->status == TSS_SORB);
 	Assert(state->memtupcount == 0);
 	Assert(!state->bounded);
 
@@ -1369,14 +1369,14 @@ sorb_link(struct Tuplesortstate * state, int new)
 	{	/* not 1st ever tuple */
 
 		if( state->memtuples[head].next == -1 )
-		{	/* 2nd in run; can never be wrong direction */
+		{	/* 2nd in run; establishes run direction */
 			if( (state->run_up = (COMPARETUP(state, &state->memtuples[head],
 												&state->memtuples[new]) <= 0)) )
 				/* Non-descending order run */
 				if( state->bounded  &&  1 == state->bound )
 				{	/* run already longer than required; drop the new one */
 					free_sort_tuple(state, &state->memtuples[new]);
-					state->memtupcount = new-1;
+					state->memtupcount = new;
 				}
 				else
 				{
@@ -1390,7 +1390,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 					state->memtuples[head].tuple = state->memtuples[new].tuple;
 					state->memtuples[head].datum1 = state->memtuples[new].datum1;
 					state->memtuples[head].isnull1 = state->memtuples[new].isnull1;
-					state->memtupcount = new-1;
+					state->memtupcount = new;
 				}
 				else
 				{
@@ -1410,7 +1410,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 				if( state->bounded  &&  new+1-head > state->bound )
 				{	/* run now longer than required; drop the new one */
 					free_sort_tuple(state, &state->memtuples[new]);
-					state->memtupcount = new-1;
+					state->memtupcount = new;
 				}
 				else
 				{
@@ -1434,7 +1434,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 					memmove( &state->memtuples[end], &state->memtuples[end+1],
 						(new-end)*sizeof(SortTuple) );
 					state->memtuples[end].next = -1;
-					new = state->memtupcount = new-1;
+					state->memtupcount = new;
 				}
 
 				state->memtuples[new].next = head;
