@@ -1505,8 +1505,8 @@ sorb_collector(struct Tuplesortstate * state)
  *
  * Walk the list once setting up a back-link chain (for ease of swaps),
  * then again swapping each element into a sorted array order; this is
- * trivially a well-formed heap. N-1 swaps plus a move are needed.
- * We don't bother checking for the swap-to-same-place case.
+ * trivially a well-formed heap. N-1 swaps plus a move are needed
+ * (none at all for the presorted-input case).
  *XXX could we do some of the back-link work in the final collector merge?
  */
 static inline void
@@ -1533,8 +1533,13 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 	{
 		SortTuple	tmp;
 		Assert(j <= i);
-		dest = &state->memtuples[j];	/* new location in heap */
 		this = &state->memtuples[i];	/* old location in list */
+		if( j == i )
+		{
+			this->tupindex = 0;
+			continue;
+		}
+		dest = &state->memtuples[j];	/* new location in heap */
 		tmp = *dest;					/* make space for new heap element */
 
 		dest->tuple = this->tuple;		/* move element to heap...	*/
@@ -1546,11 +1551,15 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		state->memtuples[tmp.prev].next = i;
 		state->memtuples[tmp.next].prev = i;
 	}
+
 	dest = &state->memtuples[j];		/* new location in heap */
-	this = &state->memtuples[i];		/* old location in list */
-	dest->tuple = this->tuple;			/* move element to heap...	*/
-	dest->datum1 = this->datum1;		/*							*/
-	dest->isnull1 = this->isnull1;		/*							*/
+	if( i != j )
+	{
+		this = &state->memtuples[i];	/* old location in list */
+		dest->tuple = this->tuple;		/* move element to heap...	*/
+		dest->datum1 = this->datum1;	/*							*/
+		dest->isnull1 = this->isnull1;	/*							*/
+	}
 	dest->tupindex = 0;					/* ... setting run number 0	*/
 
 	state->memtupcount = j+1;
