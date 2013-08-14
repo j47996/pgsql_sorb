@@ -1520,7 +1520,7 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 	int ntuples = state->memtupcount;
 
 	if( ntuples == 0 )
-		return;
+		return;					/* no work to do */
 	state->memtupcount = 0;		/* make the heap empty */
 	for( i = start;
 		 (next = state->memtuples[i].next) >= 0;
@@ -1532,10 +1532,10 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		 i = next, j++)
 	{
 		SortTuple	tmp;
-		Assert(j <= i);
+		Assert(i >= j);					/* item should not yet be in heap */
 		this = &state->memtuples[i];	/* old location in list */
-		if( j == i )
-		{
+		if( i == j )
+		{								/* already in right place for heap */
 			this->tupindex = 0;
 			continue;
 		}
@@ -1548,8 +1548,10 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		dest->tupindex = 0;				/* ... setting run number 0	*/
 
 		*this = tmp;					/* element displaced by heap */
-		state->memtuples[tmp.prev].next = i;
-		state->memtuples[tmp.next].prev = i;
+		if(tmp.prev > j)				/* ... has prev not in heap  */
+			state->memtuples[tmp.prev].next = i; /* change to new loc */
+		if(tmp.next > j)				/* ... has succ not in heap  */
+			state->memtuples[tmp.next].prev = i; /* change to new loc */
 	}
 
 	dest = &state->memtuples[j];		/* new location in heap */
