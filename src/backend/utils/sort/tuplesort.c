@@ -473,12 +473,22 @@ struct Tuplesortstate
 	int			datumTypeLen;
 	bool		datumTypeByVal;
 
-	/* These variables are specific to the sorb algorithm: */
-	int			start;
+	/*
+	 * These variables are specific to the sorb algorithm:
+	 * "runhooks" is the list used for scheduling merges in the hope of
+	 * balanced sizes (for best performance).  "maxhook" is the highest
+	 * number element of runhooks.
+	 * "list_end" is the current list tail for the hook-0 list while in
+	 * phases 1/2, and the last list item for which a reverse-chain has
+	 * been built by phase 3 (final merge).
+	 * "run_up" identifies, for phase 1, the current input run direction.
+	 * "list_start" is the head of the sorted list after phase 3.
+	 */
 #define NHOOKS 40
 	int			runhooks[NHOOKS];
-	int			list_end;
 	int			maxhook;
+	int			list_start;
+	int			list_end;
 	bool		run_up;
 
 	/*
@@ -662,7 +672,7 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 	{
 		int * hp;
 		state->status = TSS_SORB;
-		state->start = -1;
+		state->list_start = -1;
 		for(hp = state->runhooks; hp < state->runhooks + NHOOKS; hp++)
 			*hp = -1;
 		state->maxhook= 0;
@@ -1296,10 +1306,12 @@ tuplesort_putdatum(Tuplesortstate *state, Datum val, bool isNull)
 }
 
 /* Sorb 2nd/3rd stage: merge a pair of lists. */
+/* If requested, fill in backlinks as we go, and note how far backlinking got.*/
 static int
-sorb_merge(struct Tuplesortstate * state, int old, int new)
+sorb_merge(struct Tuplesortstate * state, int old, int new, const bool backlink)
 {
-	int start, end;
+	int start;
+	int end = -1;
 	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
 	unsigned cnt = 1;
 
@@ -1312,6 +1324,8 @@ sorb_merge(struct Tuplesortstate * state, int old, int new)
 
 old_lower:
 	do {
+		if( backlink )
+			state->memtuples[old].prev = end;
 		end = old;
 		old = state->memtuples[old].next;
 		if( cnt++ >= bound )
@@ -1325,6 +1339,11 @@ old_lower:
 			 * not worthwhile here (unless memory is under pressure?)
 			 */
 			state->memtuples[end].next = new;
+			if( backlink )
+			{
+				state->memtuples[new].prev = end;
+				state->list_end = new;	/* backlinking done to here */
+			}
 			return start;
 		}
 	} while( COMPARETUP(state, &state->memtuples[old],
@@ -1333,6 +1352,8 @@ old_lower:
 
 new_lower:
 	do {
+		if( backlink )
+			state->memtuples[new].prev = end;
 		end = new;
 		new = state->memtuples[new].next;
 		if( cnt++ >= bound )
@@ -1340,6 +1361,11 @@ new_lower:
 		if( new == -1 )	/* Just link the "old" list on the end */
 		{
 			state->memtuples[end].next = old;
+			if( backlink )
+			{
+				state->memtuples[old].prev = end;
+				state->list_end = old;	/* backlinking done to here */
+			}
 			return start;
 		}
 	} while( COMPARETUP(state, &state->memtuples[old],
@@ -1349,6 +1375,9 @@ new_lower:
 
 bound_reached:
 	state->memtuples[end].next = -1;
+	if( backlink )
+		state->list_end = end;	/* backlinking done to here */
+
 	/* We can free up the tuple memory, but not the SortTuple structs. */
 	/* Could potentially build a freelist of them, used preferentially */
 	/* for new tuples.												   */
@@ -1466,7 +1495,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 				  state->runhooks[hook] >= 0  &&  hook <= state->maxhook + 1;
 				  hook++ )
 			{
-				start = sorb_merge(state, state->runhooks[hook], start);
+				start = sorb_merge(state, state->runhooks[hook], start, false);
 				state->runhooks[hook] = -1;
 			}
 			state->runhooks[hook] = start;
@@ -1481,20 +1510,26 @@ sorb_link(struct Tuplesortstate * state, int new)
 }
 
 /* Third-stage of sorb: merge intermediate runs to final list. */
-static inline int
-sorb_collector(struct Tuplesortstate * state)
+/* If asked, build a backlink chain during the active merge portion */
+/* of the final merge.												*/
+static int
+sorb_collector(struct Tuplesortstate * state, bool backlink)
 {
 	int hook = 0;
 	int start;
 
+	state->list_end = -1;
 	if( state->memtupcount == 0 )
 		return -1;
+
 	while( state->runhooks[hook] == -1 )
 		hook++;
 	start = state->runhooks[hook];
-	while( ++hook <= state->maxhook )
+	while( ++hook < state->maxhook )
 		if( state->runhooks[hook] >= 0 )
-			start = sorb_merge(state, state->runhooks[hook], start);
+			start = sorb_merge(state, state->runhooks[hook], start, false);
+	if( state->runhooks[hook] >= 0 )
+		start = sorb_merge(state, state->runhooks[hook], start, backlink);
 	return start;
 }
 
@@ -1522,7 +1557,8 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 	if( ntuples == 0 )
 		return;					/* no work to do */
 	state->memtupcount = 0;		/* make the heap empty */
-	for( i = start;
+
+	for( i = state->list_end >= 0 ? state->list_end : start;
 		 (next = state->memtuples[i].next) >= 0;
 		 i = next)
 		state->memtuples[next].prev = i;	/* temporary use as backlink */
@@ -1574,7 +1610,7 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 static inline void
 sorb_reverse_chain(struct Tuplesortstate * state)
 {
-	int this = state->start;
+	int this = state->list_start;
 	int next;
 
 	if (this >= 0)
@@ -1692,7 +1728,7 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			 * Nope; time to switch to tape-based operation.
 			 * 3rd (final) sorb stage: merge all intermediate lists to one.
 			 */
-			state->start = sorb_collector(state);
+			state->list_start = sorb_collector(state, true);
 
 			/*
 			 * Set up for tape-based operation.
@@ -1704,7 +1740,7 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			 * The inittapes allocated some memory for tape buffers.
 			 * Dump tuples until we are back under the limit.
 			 */
-			state->start = dumptuples_from_list(state, state->start);
+			state->list_start = dumptuples_from_list(state, state->list_start);
 
 			/*
 			 * Convert the remaining contents of memtuple[] into a heap. Each
@@ -1712,7 +1748,7 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			 * does not depend on memtupcount for a memmtuple[] endmark (only
 			 * as a valid count) but returns with it valid in both senses.
 			 */
-			heapify_sorted_list(state, state->start);
+			heapify_sorted_list(state, state->list_start);
 			break;
 		}
 
@@ -1859,7 +1895,7 @@ tuplesort_performsort(Tuplesortstate *state)
 			/* 3rd (final) sorb stage: merge all intermediate lists to one */
 			state->current =
 			state->markpos_offset =
-			state->start = sorb_collector(state);
+			state->list_start = sorb_collector(state, state->randomAccess);
 
 			state->eof_reached = false;
 			state->markpos_eof = false;
@@ -1979,7 +2015,7 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 			{
 				int item = state->current;
 
-				if (item == state->start)
+				if (item == state->list_start)
 					return false;
 
 				/*
@@ -1991,7 +2027,7 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 				else
 				{
 					item = state->current = state->memtuples[item].prev;
-					if (item == state->start)
+					if (item == state->list_start)
 						return false;
 				}
 				item = state->memtuples[item].prev;
@@ -2911,7 +2947,7 @@ tuplesort_rescan(Tuplesortstate *state)
 	switch (state->status)
 	{
 		case TSS_SORB:
-			state->current = state->markpos_offset = state->start;
+			state->current = state->markpos_offset = state->list_start;
 			state->eof_reached = state->markpos_eof = false;
 			break;
 		case TSS_SORTEDINMEM:
