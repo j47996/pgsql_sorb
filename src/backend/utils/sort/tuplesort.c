@@ -477,7 +477,7 @@ struct Tuplesortstate
 	int			start;
 #define NHOOKS 40
 	int			runhooks[NHOOKS];
-	int			list_end[NHOOKS];
+	int			list_end;
 	int			maxhook;
 	bool		run_up;
 
@@ -1392,7 +1392,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 				else
 				{
 					state->memtuples[new].next = -1;
-					state->memtuples[head].next = state->list_end[0] = new;
+					state->memtuples[head].next = state->list_end = new;
 				}
 			else /* Descending-order run */
 				if( state->bounded  &&  1 == state->bound )
@@ -1414,7 +1414,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 		/* run direction established */
 		if( state->run_up )
 		{	/* Non-descending order run */
-			end = state->list_end[0];
+			end = state->list_end;
 			if( (COMPARETUP(state, &state->memtuples[end],
 								   &state->memtuples[new]) <= 0) )
 			{	/* new tuple extends run */
@@ -1426,7 +1426,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 				else
 				{
 					state->memtuples[new].next = -1;
-					state->memtuples[end].next = state->list_end[0] = new;
+					state->memtuples[end].next = state->list_end = new;
 				}
 				return;	/* >=2 element list, on hook 0 */
 			}
@@ -1436,7 +1436,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 			if( (COMPARETUP(state, &state->memtuples[head],
 								   &state->memtuples[new]) > 0) )
 			{	/* new tuple extends run */
-				end = state->list_end[0];
+				end = state->list_end;
 				if( state->bounded  &&  new+1-end > state->bound )
 				{	/* run now longer than required; drop the largest one */
 					free_sort_tuple(state, &state->memtuples[end]);
@@ -1476,7 +1476,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 	}
 
 	state->memtuples[new].next = -1;
-	state->runhooks[0] = state->list_end[0] = new;
+	state->runhooks[0] = state->list_end = new;
 	return;	/* 1-element list, on hook 0 */
 }
 
