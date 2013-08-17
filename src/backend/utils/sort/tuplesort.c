@@ -665,6 +665,7 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 	state = (Tuplesortstate *) palloc0(sizeof(Tuplesortstate));
 
 #ifdef TRACE_SORT
+trace_sort = true;
 	if (trace_sort)
 		pg_rusage_init(&state->ru_start);
 #endif
@@ -728,8 +729,8 @@ tuplesort_begin_heap(TupleDesc tupDesc,
 
 #ifdef TRACE_SORT
 	if (trace_sort)
-		elog(LOG,
-			 "begin tuple sort: nkeys = %d, workMem = %d, randomAccess = %c",
+		elog(NOTICE,
+			 "begin heap sort: nkeys = %d, workMem = %d, randomAccess = %c",
 			 nkeys, workMem, randomAccess ? 't' : 'f');
 #endif
 
@@ -789,8 +790,8 @@ tuplesort_begin_cluster(TupleDesc tupDesc,
 
 #ifdef TRACE_SORT
 	if (trace_sort)
-		elog(LOG,
-			 "begin tuple sort: nkeys = %d, workMem = %d, randomAccess = %c",
+		elog(NOTICE,
+			 "begin cluster sort: nkeys = %d, workMem = %d, randomAccess = %c",
 			 RelationGetNumberOfAttributes(indexRel),
 			 workMem, randomAccess ? 't' : 'f');
 #endif
@@ -849,8 +850,8 @@ tuplesort_begin_index_btree(Relation heapRel,
 
 #ifdef TRACE_SORT
 	if (trace_sort)
-		elog(LOG,
-			 "begin index sort: unique = %c, workMem = %d, randomAccess = %c",
+		elog(NOTICE,
+			 "begin index_bt sort: unique = %c, workMem = %d, randomAccess = %c",
 			 enforceUnique ? 't' : 'f',
 			 workMem, randomAccess ? 't' : 'f');
 #endif
@@ -892,8 +893,8 @@ tuplesort_begin_index_hash(Relation heapRel,
 
 #ifdef TRACE_SORT
 	if (trace_sort)
-		elog(LOG,
-		"begin index sort: hash_mask = 0x%x, workMem = %d, randomAccess = %c",
+		elog(NOTICE,
+		"begin index_h sort: hash_mask = 0x%x, workMem = %d, randomAccess = %c",
 			 hash_mask,
 			 workMem, randomAccess ? 't' : 'f');
 #endif
@@ -930,7 +931,7 @@ tuplesort_begin_datum(Oid datumType, Oid sortOperator, Oid sortCollation,
 
 #ifdef TRACE_SORT
 	if (trace_sort)
-		elog(LOG,
+		elog(NOTICE,
 			 "begin datum sort: workMem = %d, randomAccess = %c",
 			 workMem, randomAccess ? 't' : 'f');
 #endif
@@ -1041,10 +1042,10 @@ tuplesort_end(Tuplesortstate *state)
 	if (trace_sort)
 	{
 		if (state->tapeset)
-			elog(LOG, "external sort ended, %ld disk blocks used: %s",
+			elog(NOTICE, "external sort ended, %ld disk blocks used: %s",
 				 spaceUsed, pg_rusage_show(&state->ru_start));
 		else
-			elog(LOG, "internal sort ended, %ld KB used: %s",
+			elog(NOTICE, "internal sort ended, %ld KB used: %s",
 				 spaceUsed, pg_rusage_show(&state->ru_start));
 	}
 
@@ -1786,7 +1787,7 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			{
 #ifdef TRACE_SORT
 				if (trace_sort)
-					elog(LOG, "switching to bounded heapsort at %d tuples: %s",
+					elog(NOTICE, "switching to bounded heapsort at %d tuples: %s",
 						 state->memtupcount,
 						 pg_rusage_show(&state->ru_start));
 #endif
@@ -1885,7 +1886,7 @@ tuplesort_performsort(Tuplesortstate *state)
 
 #ifdef TRACE_SORT
 	if (trace_sort)
-		elog(LOG, "performsort starting: %s",
+		elog(NOTICE, "performsort starting: %s",
 			 pg_rusage_show(&state->ru_start));
 #endif
 
@@ -1969,11 +1970,11 @@ tuplesort_performsort(Tuplesortstate *state)
 	if (trace_sort)
 	{
 		if (state->status == TSS_FINALMERGE)
-			elog(LOG, "performsort done (except %d-way final merge): %s",
+			elog(NOTICE, "performsort done (except %d-way final merge): %s",
 				 state->activeTapes,
 				 pg_rusage_show(&state->ru_start));
 		else
-			elog(LOG, "performsort done: %s",
+			elog(NOTICE, "performsort done:     %s",
 				 pg_rusage_show(&state->ru_start));
 	}
 #endif
@@ -2391,7 +2392,7 @@ inittapes(Tuplesortstate *state)
 
 #ifdef TRACE_SORT
 	if (trace_sort)
-		elog(LOG, "switching to external sort with %d tapes: %s",
+		elog(NOTICE, "switching to external sort with %d tapes: %s",
 			 maxTapes, pg_rusage_show(&state->ru_start));
 #endif
 
@@ -2686,7 +2687,7 @@ mergeonerun(Tuplesortstate *state)
 
 #ifdef TRACE_SORT
 	if (trace_sort)
-		elog(LOG, "finished %d-way merge step: %s", state->activeTapes,
+		elog(NOTICE, "finished %d-way merge step: %s", state->activeTapes,
 			 pg_rusage_show(&state->ru_start));
 #endif
 }
@@ -2917,7 +2918,7 @@ dumptuples(Tuplesortstate *state, bool alltuples)
 
 #ifdef TRACE_SORT
 			if (trace_sort)
-				elog(LOG, "finished writing%s run %d to tape %d: %s",
+				elog(NOTICE, "finished writing%s run %d to tape %d: %s",
 					 (state->memtupcount == 0) ? " final" : "",
 					 state->currentRun, state->destTape,
 					 pg_rusage_show(&state->ru_start));

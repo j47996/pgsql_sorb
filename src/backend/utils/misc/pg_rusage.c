@@ -61,13 +61,13 @@ pg_rusage_show(const PGRUsage *ru0)
 	}
 
 	snprintf(result, sizeof(result),
-			 "CPU %d.%02ds/%d.%02du sec elapsed %d.%02d sec",
+			 "CPU %d.%06ds/%d.%06du sec elapsed %d.%06d sec",
 			 (int) (ru1.ru.ru_stime.tv_sec - ru0->ru.ru_stime.tv_sec),
-		  (int) (ru1.ru.ru_stime.tv_usec - ru0->ru.ru_stime.tv_usec) / 10000,
+		  (int) (ru1.ru.ru_stime.tv_usec - ru0->ru.ru_stime.tv_usec),
 			 (int) (ru1.ru.ru_utime.tv_sec - ru0->ru.ru_utime.tv_sec),
-		  (int) (ru1.ru.ru_utime.tv_usec - ru0->ru.ru_utime.tv_usec) / 10000,
+		  (int) (ru1.ru.ru_utime.tv_usec - ru0->ru.ru_utime.tv_usec),
 			 (int) (ru1.tv.tv_sec - ru0->tv.tv_sec),
-			 (int) (ru1.tv.tv_usec - ru0->tv.tv_usec) / 10000);
+			 (int) (ru1.tv.tv_usec - ru0->tv.tv_usec));
 
 	return result;
 }
