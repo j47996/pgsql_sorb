@@ -115,9 +115,18 @@
  *
  * Random-access is limited in this module to rescan, mark- and restore-pos,
  * and reverse-access read.  We can handle all but the last easily; the
- * reverse-read requires a reverse-linked list.  This is built any time
- * random is requested (we might consider doing it only on the first
- * reverse access).
+ * reverse-read requires a reverse-linked list.  This is built only on the first
+ * reverse access (or the transition to a heap, for supporting the external
+ * sort).  The additional link field makes the per-item data larger than
+ * that used by the quicksort core; we might consider separating it and only
+ * allocating when needed (XXX).
+ *
+ * The progressive aspect (work being done during input) means that there is
+ * potential for useful overlap between work done here and readaheads done
+ * for our data source.  It is not clear how significant this will be.  A
+ * possible downside is the increased active instruction-space (and I-cache
+ * loading).  The intermediate timing reports also become hard to compare
+ * between the old and new implementations.
  *
  * Internals:
  *  Sorb runs in three phases.
@@ -154,6 +163,14 @@
  *  The cost is more memory; still O(log n) for this component but the
  * crossover point where the O(n) become larger is n ~= 2000.  And a
  * certain amount of coding complexity.
+ *
+ *  We could implement output-progressivity for the final list merge,
+ * only doing a comparison between the head elements of the penultimate
+ * lists on demand from out data-sink.  This would be an advantage should
+ * only part of the output be requested (probably unlikely) or if any
+ * significant overlap would result with downstream processing.  This
+ * seems unlikely in the absence of batching or an MP implementation
+ * of the Postgres executor.
  * 
  *  There is potential for an MP Sorb implementation.  The merge stages
  * are independent apart from the ordering required to maintain a
