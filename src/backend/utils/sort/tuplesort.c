@@ -507,6 +507,7 @@ struct Tuplesortstate
 	int			list_start;
 	int			list_end;
 	bool		run_up;
+	bool		reverse_linkage;
 
 	/*
 	 * Resource snapshot for time of sort start.
@@ -1536,6 +1537,7 @@ sorb_collector(struct Tuplesortstate * state, bool backlink)
 	int start;
 
 	state->list_end = -1;
+	state->reverse_linkage = false;
 	if( state->memtupcount == 0 )
 		return -1;
 
@@ -1559,7 +1561,6 @@ sorb_collector(struct Tuplesortstate * state, bool backlink)
  * then again swapping each element into a sorted array order; this is
  * trivially a well-formed heap. N-1 swaps plus a move are needed
  * (none at all for the presorted-input case).
- *XXX could we do some of the back-link work in the final collector merge?
  */
 static inline void
 heapify_sorted_list(struct Tuplesortstate * state, int start)
@@ -1575,11 +1576,15 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		return;					/* no work to do */
 	state->memtupcount = 0;		/* make the heap empty */
 
+	/* Build backlink chain, accounting for work already done in sorb_merge */
 	for( i = state->list_end >= 0 ? state->list_end : start;
 		 (next = state->memtuples[i].next) >= 0;
 		 i = next)
 		state->memtuples[next].prev = i;	/* temporary use as backlink */
+	state->list_end = i;
+	state->reverse_linkage = true;
 
+	/* Walk list, copying to an in-order array */
 	for( i = start, j = 0;
 		 (next = state->memtuples[i].next) >= 0;
 		 i = next, j++)
@@ -1630,12 +1635,16 @@ sorb_reverse_chain(struct Tuplesortstate * state)
 	int this = state->list_start;
 	int next;
 
+	if (state->reverse_linkage)
+		return;
 	if (this >= 0)
 	{
 		state->memtuples[this].prev = -1;
 		for (; (next = state->memtuples[this].next) >= 0; this = next)
 			state->memtuples[next].prev = this;
 	}
+	state->list_end = this;
+	state->reverse_linkage = true;
 }
 
 /*
@@ -1917,8 +1926,6 @@ tuplesort_performsort(Tuplesortstate *state)
 			state->eof_reached = false;
 			state->markpos_eof = false;
 
-			if(state->randomAccess)
-				sorb_reverse_chain(state);
 			break;
 
 		case TSS_INITIAL:
@@ -2034,6 +2041,9 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 
 				if (item == state->list_start)
 					return false;
+
+				/* Build backlinks, if not already done */
+				sorb_reverse_chain(state);
 
 				/*
 				 * if all tuples are fetched already then we return last
