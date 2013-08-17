@@ -1553,6 +1553,25 @@ sorb_collector(struct Tuplesortstate * state, bool backlink)
 }
 
 /*
+ * Walk the list setting up a back-link chain (for reverse access).
+ */
+static inline void
+sorb_reverse_chain(struct Tuplesortstate * state, int start)
+{
+	int this, next;
+
+	Assert(start >= 0);
+	Assert(state->memtuples[start].prev == -1);
+
+	for( this = state->list_end >= 0 ? state->list_end : start;
+		 (next = state->memtuples[this].next) >= 0;
+		 this = next)
+		state->memtuples[next].prev = this;
+	state->list_end = this;
+	state->reverse_linkage = true;
+}
+
+/*
  * Convert the sorted-list output of a sorb run, sparsely resident in
  * memtuples[], in-place into a heap.  Each tuple is marked as belonging
  * to run number zero.
@@ -1574,15 +1593,10 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 
 	if( ntuples == 0 )
 		return;					/* no work to do */
-	state->memtupcount = 0;		/* make the heap empty */
 
 	/* Build backlink chain, accounting for work already done in sorb_merge */
-	for( i = state->list_end >= 0 ? state->list_end : start;
-		 (next = state->memtuples[i].next) >= 0;
-		 i = next)
-		state->memtuples[next].prev = i;	/* temporary use as backlink */
-	state->list_end = i;
-	state->reverse_linkage = true;
+	state->memtuples[start].prev = -1;
+	sorb_reverse_chain(state, start);
 
 	/* Walk list, copying to an in-order array */
 	for( i = start, j = 0;
@@ -1624,27 +1638,6 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 
 	state->memtupcount = j+1;
 	Assert(state->memtupcount == ntuples);
-}
-
-/*
- * Walk the list setting up a back-link chain (for reverse access).
- */
-static inline void
-sorb_reverse_chain(struct Tuplesortstate * state)
-{
-	int this = state->list_start;
-	int next;
-
-	if (state->reverse_linkage)
-		return;
-	if (this >= 0)
-	{
-		state->memtuples[this].prev = -1;
-		for (; (next = state->memtuples[this].next) >= 0; this = next)
-			state->memtuples[next].prev = this;
-	}
-	state->list_end = this;
-	state->reverse_linkage = true;
 }
 
 /*
@@ -1692,6 +1685,9 @@ dumptuples_from_list(Tuplesortstate * state, int start)
 	{
 		/* Dump the list's frontmost entry. */
 		SortTuple * tp = &state->memtuples[start];
+
+		if (start == state->list_end)	/* Backlink work done in    */
+			state->list_end = -1;		/* sorb_merge() now useless */
 
 		start = tp->next;
 		Assert(state->memtupcount > 0);
@@ -2043,7 +2039,8 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 					return false;
 
 				/* Build backlinks, if not already done */
-				sorb_reverse_chain(state);
+				if (!state->reverse_linkage)
+					sorb_reverse_chain(state, state->list_start);
 
 				/*
 				 * if all tuples are fetched already then we return last
