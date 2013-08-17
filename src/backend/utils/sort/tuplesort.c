@@ -254,12 +254,12 @@ bool		optimize_bounded_sort = true;
  * from the same tape in the case of pre-read entries.	tupindex goes unused
  * if the sort occurs entirely in memory.
  *
- * While running the sorb variant internal sort, next is the index in the
- * memTuples array used for a linked-list.  We used an index rather than the
- * more natural pointer on the assumption that the growth of memTuples may need
- * a copy; the alternative would be a specialised copy which adjusted pointers.
- * For the transition from sorb to tapes, we use tupindex as a reverse pointer
- * in the sorb list.
+ * While running the sorb varian internal sort, tupindex is reused as the index
+ * in the memTuples array of the next item in a linked-list.  An index is used
+ * rather than the more natural pointer on the assumption that the growth of
+ * memTuples may need a copy; the alternative would be a specialised copy which
+ * adjusted pointers.  For the transition from sorb to tapes and to support
+ * reverse-access, we add a reverse index to give us a doubly-linked list.
  */
 typedef struct SortTuple
 {
@@ -267,10 +267,10 @@ typedef struct SortTuple
 	Datum		datum1;			/* value of first key column */
 	bool		isnull1;		/* is first key column NULL? */
 	int			tupindex;		/* see notes above */
-	int			next;			/* list used by the sorb method */
+	int			prev;			/* list used by the sorb method */
 } SortTuple;
 
-#define prev tupindex
+#define next tupindex			/* list used by the sorb method */
 
 /*
  * Possible states of a Tuplesort object.  These denote the states that
@@ -279,7 +279,7 @@ typedef struct SortTuple
 typedef enum
 {
 	TSS_SORB,					/* Loading tuples using alternate internal sort; */
-								/* still withing memory limit                    */
+								/*  still within memory limit                    */
 	TSS_INITIAL,				/* Loading tuples; still within memory limit */
 	TSS_BOUNDED,				/* Loading tuples into bounded-size heap */
 	TSS_BUILDRUNS,				/* Loading tuples; writing to tape */
