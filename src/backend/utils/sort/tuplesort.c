@@ -98,10 +98,8 @@
  *
  * Characteristics:
  * + The sort is progressive, stable and comparison-based.
- * + The memory overhead is O(n), in this implementation one extra pointer
- *   per datum (added to the SortTuple struct).  Currently we also swallow
- *   the overhead even when using the quicksort and external tape sort
- *   methods; this could be coded around.
+ * + The memory overhead is O(n), in this implementation one index per datum
+ *   (in SortTuple shared with tape-sort).
  * + The runtime complexity is O(n log n) for random input, and O(N) for
  *   presorted or reverse-sorted input with an optimal number of comparisons.
  *   Worst-case is O(n log n); there are no pathological cases.
@@ -261,17 +259,20 @@ bool		optimize_bounded_sort = true;
  *
  * While running the sorb variant internal sort, tupindex is reused as the index
  * in the memTuples array of the next item in a linked-list.  An index is used
- * rather than the more natural pointer on the assumption that the growth of
- * memTuples may need a copy; the alternative would be a specialised copy which
- * adjusted pointers.  For the transition from sorb to tapes and to support
- * reverse-access, we add a reverse index to give us a doubly-linked list
- * (held in a separate array but 1-1 with memtuples).
+ * rather than the more natural pointer bwcause the growth of memTuples may need
+ * a copy; the alternative would be a specialised copy which adjusted pointers.
+ * For the transition from sorb to tapes and to support reverse-access, we need
+ * a reverse index to give us a doubly-linked list; this is shoehorned into the
+ * upper bits of the integer holding "isnull1";
  */
+#define PG_INT_BITS ((sizeof(int) * CHAR_BIT))
+
 typedef struct SortTuple
 {
 	void	   *tuple;			/* the tuple proper */
 	Datum		datum1;			/* value of first key column */
-	bool		isnull1;		/* is first key column NULL? */
+	int			isnull1 : 1;	/* is first key column NULL? */
+	int			prev    : PG_INT_BITS-1;
 	int			tupindex;		/* see notes above */
 } SortTuple;
 
@@ -505,11 +506,6 @@ struct Tuplesortstate
 	 * been built by phase 3 (final merge).
 	 * "run_up" identifies, for phase 1, the current input run direction.
 	 * "list_start" is the head of the sorted list after phase 3.
-	 * "backlinks" is an array, 1-1 in size with memtuples, used for
-	 * reverse-access in the sorted list and while converting the list to
-	 * a heap.  It is separate so as to keep SortTuple unchanged in size
-	 * and cache-friendly, as the backlinks are not always used.
-	 * It might be possible in future to not always allocate the space.
 	 */
 #define NHOOKS 40
 	int			runhooks[NHOOKS];
@@ -518,7 +514,6 @@ struct Tuplesortstate
 	int			list_end;
 	bool		run_up;
 	bool		reverse_linkage;
-	int		   *backlinks;
 
 	/*
 	 * Resource snapshot for time of sort start.
@@ -719,10 +714,8 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 	state->memtupsize = 1024;	/* initial guess */
 	state->growmemtuples = true;
 	state->memtuples = (SortTuple *) palloc(state->memtupsize * sizeof(SortTuple));
-	state->backlinks = (int *) palloc(state->memtupsize * sizeof(int));
 
 	USEMEM(state, GetMemoryChunkSpace(state->memtuples));
-	USEMEM(state, GetMemoryChunkSpace(state->backlinks));
 
 	/* workMem must be large enough for the minimal memtuples array */
 	if (LACKMEM(state))
@@ -760,7 +753,7 @@ tuplesort_begin_heap(TupleDesc tupDesc,
 #ifdef TRACE_SORT
 	if (trace_sort)
 		elog(LOG,
-			 "begin tuple sort: nkeys = %d, workMem = %d, randomAccess = %c",
+			 "begin heap sort: nkeys = %d, workMem = %d, randomAccess = %c",
 			 nkeys, workMem, randomAccess ? 't' : 'f');
 #endif
 
@@ -821,7 +814,7 @@ tuplesort_begin_cluster(TupleDesc tupDesc,
 #ifdef TRACE_SORT
 	if (trace_sort)
 		elog(LOG,
-			 "begin tuple sort: nkeys = %d, workMem = %d, randomAccess = %c",
+			 "begin cluster sort: nkeys = %d, workMem = %d, randomAccess = %c",
 			 RelationGetNumberOfAttributes(indexRel),
 			 workMem, randomAccess ? 't' : 'f');
 #endif
@@ -881,7 +874,7 @@ tuplesort_begin_index_btree(Relation heapRel,
 #ifdef TRACE_SORT
 	if (trace_sort)
 		elog(LOG,
-			 "begin index sort: unique = %c, workMem = %d, randomAccess = %c",
+			 "begin index_bt sort: unique = %c, workMem = %d, randomAccess = %c",
 			 enforceUnique ? 't' : 'f',
 			 workMem, randomAccess ? 't' : 'f');
 #endif
@@ -924,7 +917,7 @@ tuplesort_begin_index_hash(Relation heapRel,
 #ifdef TRACE_SORT
 	if (trace_sort)
 		elog(LOG,
-		"begin index sort: hash_mask = 0x%x, workMem = %d, randomAccess = %c",
+		"begin index_h sort: hash_mask = 0x%x, workMem = %d, randomAccess = %c",
 			 hash_mask,
 			 workMem, randomAccess ? 't' : 'f');
 #endif
@@ -1216,21 +1209,16 @@ grow_memtuples(Tuplesortstate *state)
 	 * palloc would be treating both old and new arrays as separate chunks.
 	 * But we'll check LACKMEM explicitly below just in case.)
 	 */
-	if (state->availMem < (int64) ((newmemtupsize - memtupsize) * (sizeof(SortTuple)+sizeof(int))))
+	if (state->availMem < (int64) ((newmemtupsize - memtupsize) * sizeof(SortTuple)))
 		goto noalloc;
 
 	/* OK, do it */
 	FREEMEM(state, GetMemoryChunkSpace(state->memtuples));
-	FREEMEM(state, GetMemoryChunkSpace(state->backlinks));
 	state->memtupsize = newmemtupsize;
 	state->memtuples = (SortTuple *)
 		repalloc_huge(state->memtuples,
 					  state->memtupsize * sizeof(SortTuple));
-	state->backlinks = (int *)
-		repalloc_huge(state->backlinks,
-					  state->memtupsize * sizeof(int));
 	USEMEM(state, GetMemoryChunkSpace(state->memtuples));
-	USEMEM(state, GetMemoryChunkSpace(state->backlinks));
 	if (LACKMEM(state))
 		elog(ERROR, "unexpected out-of-memory situation during sort");
 	return true;
@@ -1361,7 +1349,7 @@ sorb_merge(struct Tuplesortstate * state, int old, int new, const bool backlink)
 old_lower:
 	do {
 		if( backlink )
-			state->backlinks[old] = end;
+			state->memtuples[old].prev =  end;
 		end = old;
 		old = state->memtuples[old].next;
 		if( cnt++ >= bound )
@@ -1377,7 +1365,7 @@ old_lower:
 			state->memtuples[end].next = new;
 			if( backlink )
 			{
-				state->backlinks[new] = end;
+				state->memtuples[new].prev = end;
 				state->list_end = new;	/* backlinking done to here */
 			}
 			return start;
@@ -1389,7 +1377,7 @@ old_lower:
 new_lower:
 	do {
 		if( backlink )
-			state->backlinks[new] = end;
+			state->memtuples[new].prev = end;
 		end = new;
 		new = state->memtuples[new].next;
 		if( cnt++ >= bound )
@@ -1399,7 +1387,7 @@ new_lower:
 			state->memtuples[end].next = old;
 			if( backlink )
 			{
-				state->backlinks[old] = end;
+				state->memtuples[old].prev = end;
 				state->list_end = old;	/* backlinking done to here */
 			}
 			return start;
@@ -1579,12 +1567,12 @@ sorb_reverse_chain(struct Tuplesortstate * state, int start)
 	int this, next;
 
 	Assert(start >= 0);
-	Assert(state->backlinks[start] == -1);
+	Assert(state->memtuples[start].prev == -1);
 
 	for( this = state->list_end >= 0 ? state->list_end : start;
 		 (next = state->memtuples[this].next) >= 0;
 		 this = next)
-		state->backlinks[next] = this;
+		state->memtuples[next].prev = this;
 	state->list_end = this;
 	state->reverse_linkage = true;
 }
@@ -1613,7 +1601,7 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		return;					/* no work to do */
 
 	/* Build backlink chain, accounting for work already done in sorb_merge */
-	state->backlinks[start] = -1;
+	state->memtuples[start].prev = -1;
 	sorb_reverse_chain(state, start);
 
 	/* Walk list, copying to an in-order array */
@@ -1622,7 +1610,6 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		 i = next, j++)
 	{
 		SortTuple	tmp;
-		int			tmp_back;
 		Assert(i >= j);					/* item should not yet be in heap */
 		this = &state->memtuples[i];	/* old location in list */
 		if( i == j )
@@ -1632,7 +1619,6 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		}
 		dest = &state->memtuples[j];	/* new location in heap */
 		tmp = *dest;					/* make space for new heap element */
-		tmp_back = state->backlinks[j];
 
 		dest->tuple = this->tuple;		/* move element to heap...	*/
 		dest->datum1 = this->datum1;	/*							*/
@@ -1640,10 +1626,10 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		dest->tupindex = 0;				/* ... setting run number 0	*/
 
 		*this = tmp;					/* element displaced by heap */
-		if(tmp_back > j)				/* ... has prev not in heap  */
-			state->memtuples[tmp_back].next = i; /* change to new loc */
+		if(tmp.prev > j)				/* ... has prev not in heap  */
+			state->memtuples[tmp.prev].next = i; /* change to new loc */
 		if(tmp.next > j)				/* ... has succ not in heap  */
-			state->backlinks[tmp.next] = i;      /* change to new loc */
+			state->memtuples[tmp.next].prev = i; /* change to new loc */
 	}
 
 	dest = &state->memtuples[j];		/* new location in heap */
@@ -1770,7 +1756,6 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			 * Nope; time to switch to tape-based operation.
 			 * 3rd (final) sorb stage: merge all intermediate lists to one.
 			 */
-			/*XXX ZZZ backlink used */
 			state->list_start = sorb_collector(state, true);
 
 			/*
@@ -1791,7 +1776,6 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			 * does not depend on memtupcount for a memmtuple[] endmark (only
 			 * as a valid count) but returns with it valid in both senses.
 			 */
-			/*XXX ZZZ backlink used */
 			heapify_sorted_list(state, state->list_start);
 			break;
 		}
@@ -1940,7 +1924,6 @@ tuplesort_performsort(Tuplesortstate *state)
 			state->current =
 			state->markpos_offset =
 			state->list_start = sorb_collector(state, state->randomAccess);
-			/*XXX ZZZ backlink maybe used */
 
 			state->eof_reached = false;
 			state->markpos_eof = false;
@@ -2016,7 +1999,7 @@ tuplesort_performsort(Tuplesortstate *state)
 				 state->activeTapes,
 				 pg_rusage_show(&state->ru_start));
 		else
-			elog(LOG, "performsort done: %s",
+			elog(LOG, "performsort done:     %s",
 				 pg_rusage_show(&state->ru_start));
 	}
 #endif
@@ -2059,7 +2042,6 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 			}
 			else
 			{
-			/*XXX ZZZ backlink used */
 				int item = state->current;
 
 				if (item == state->list_start)
@@ -2077,11 +2059,11 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 					state->eof_reached = false;
 				else
 				{
-					item = state->current = state->backlinks[item];
+					item = state->current = state->memtuples[item].prev;
 					if (item == state->list_start)
 						return false;
 				}
-				item = state->backlinks[item];
+				item = state->memtuples[item].prev;
 				*stup = state->memtuples[item];
 				return true;
 			}
@@ -3493,6 +3475,7 @@ copytup_heap(Tuplesortstate *state, SortTuple *stup, void *tup)
 	TupleTableSlot *slot = (TupleTableSlot *) tup;
 	MinimalTuple tuple;
 	HeapTupleData htup;
+	bool isnull1;
 
 	/* copy the tuple into sort storage */
 	tuple = ExecCopySlotMinimalTuple(slot);
@@ -3504,7 +3487,8 @@ copytup_heap(Tuplesortstate *state, SortTuple *stup, void *tup)
 	stup->datum1 = heap_getattr(&htup,
 								state->sortKeys[0].ssup_attno,
 								state->tupDesc,
-								&stup->isnull1);
+								&isnull1);
+	stup->isnull1 = isnull1;
 }
 
 static void
@@ -3540,6 +3524,7 @@ readtup_heap(Tuplesortstate *state, SortTuple *stup,
 	MinimalTuple tuple = (MinimalTuple) palloc(tuplen);
 	char	   *tupbody = (char *) tuple + MINIMAL_TUPLE_DATA_OFFSET;
 	HeapTupleData htup;
+	bool isnull1;
 
 	USEMEM(state, GetMemoryChunkSpace(tuple));
 	/* read in the tuple proper */
@@ -3556,7 +3541,8 @@ readtup_heap(Tuplesortstate *state, SortTuple *stup,
 	stup->datum1 = heap_getattr(&htup,
 								state->sortKeys[0].ssup_attno,
 								state->tupDesc,
-								&stup->isnull1);
+								&isnull1);
+	stup->isnull1 = isnull1;
 }
 
 static void
@@ -3685,6 +3671,7 @@ static void
 copytup_cluster(Tuplesortstate *state, SortTuple *stup, void *tup)
 {
 	HeapTuple	tuple = (HeapTuple) tup;
+	bool isnull1;
 
 	/* copy the tuple into sort storage */
 	tuple = heap_copytuple(tuple);
@@ -3695,7 +3682,8 @@ copytup_cluster(Tuplesortstate *state, SortTuple *stup, void *tup)
 		stup->datum1 = heap_getattr(tuple,
 									state->indexInfo->ii_KeyAttrNumbers[0],
 									state->tupDesc,
-									&stup->isnull1);
+									&isnull1);
+	stup->isnull1 = isnull1;
 }
 
 static void
@@ -3725,6 +3713,7 @@ readtup_cluster(Tuplesortstate *state, SortTuple *stup,
 {
 	unsigned int t_len = tuplen - sizeof(ItemPointerData) - sizeof(int);
 	HeapTuple	tuple = (HeapTuple) palloc(t_len + HEAPTUPLESIZE);
+	bool isnull1;
 
 	USEMEM(state, GetMemoryChunkSpace(tuple));
 	/* Reconstruct the HeapTupleData header */
@@ -3746,7 +3735,8 @@ readtup_cluster(Tuplesortstate *state, SortTuple *stup,
 		stup->datum1 = heap_getattr(tuple,
 									state->indexInfo->ii_KeyAttrNumbers[0],
 									state->tupDesc,
-									&stup->isnull1);
+									&isnull1);
+	stup->isnull1 = isnull1;
 }
 
 
@@ -3929,6 +3919,7 @@ copytup_index(Tuplesortstate *state, SortTuple *stup, void *tup)
 	IndexTuple	tuple = (IndexTuple) tup;
 	unsigned int tuplen = IndexTupleSize(tuple);
 	IndexTuple	newtuple;
+	bool isnull1;
 
 	/* copy the tuple into sort storage */
 	newtuple = (IndexTuple) palloc(tuplen);
@@ -3939,7 +3930,8 @@ copytup_index(Tuplesortstate *state, SortTuple *stup, void *tup)
 	stup->datum1 = index_getattr(newtuple,
 								 1,
 								 RelationGetDescr(state->indexRel),
-								 &stup->isnull1);
+								 &isnull1);
+	stup->isnull1 = isnull1;
 }
 
 static void
@@ -3967,6 +3959,7 @@ readtup_index(Tuplesortstate *state, SortTuple *stup,
 {
 	unsigned int tuplen = len - sizeof(unsigned int);
 	IndexTuple	tuple = (IndexTuple) palloc(tuplen);
+	bool isnull1;
 
 	USEMEM(state, GetMemoryChunkSpace(tuple));
 	LogicalTapeReadExact(state->tapeset, tapenum,
@@ -3979,7 +3972,8 @@ readtup_index(Tuplesortstate *state, SortTuple *stup,
 	stup->datum1 = index_getattr(tuple,
 								 1,
 								 RelationGetDescr(state->indexRel),
-								 &stup->isnull1);
+								 &isnull1);
+	stup->isnull1 = isnull1;
 }
 
 static void
