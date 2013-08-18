@@ -98,10 +98,8 @@
  *
  * Characteristics:
  * + The sort is progressive, stable and comparison-based.
- * + The memory overhead is O(n), in this implementation one extra pointer
- *   per datum (added to the SortTuple struct).  Currently we also swallow
- *   the overhead even when using the quicksort and external tape sort
- *   methods; this could be coded around.
+ * + The memory overhead is O(n), in this implementation one index per datum
+ *   (in SortTuple shared with tape-sort).
  * + The runtime complexity is O(n log n) for random input, and O(N) for
  *   presorted or reverse-sorted input with an optimal number of comparisons.
  *   Worst-case is O(n log n); there are no pathological cases.
@@ -256,18 +254,21 @@ bool		optimize_bounded_sort = true;
  *
  * While running the sorb varian internal sort, tupindex is reused as the index
  * in the memTuples array of the next item in a linked-list.  An index is used
- * rather than the more natural pointer on the assumption that the growth of
- * memTuples may need a copy; the alternative would be a specialised copy which
- * adjusted pointers.  For the transition from sorb to tapes and to support
- * reverse-access, we add a reverse index to give us a doubly-linked list.
+ * rather than the more natural pointer bwcause the growth of memTuples may need
+ * a copy; the alternative would be a specialised copy which adjusted pointers.
+ * For the transition from sorb to tapes and to support reverse-access, we need
+ * a reverse index to give us a doubly-linked list; this is shoehorned into the
+ * upper bits of the integer holding "isnull1";
  */
+#define PG_INT_BITS ((sizeof(int) * CHAR_BIT))
+
 typedef struct SortTuple
 {
 	void	   *tuple;			/* the tuple proper */
 	Datum		datum1;			/* value of first key column */
-	bool		isnull1;		/* is first key column NULL? */
+	int			isnull1 : 1;	/* is first key column NULL? */
+	int			prev    : PG_INT_BITS-1;
 	int			tupindex;		/* see notes above */
-	int			prev;			/* list used by the sorb method */
 } SortTuple;
 
 #define next tupindex			/* list used by the sorb method */
@@ -1343,7 +1344,7 @@ sorb_merge(struct Tuplesortstate * state, int old, int new, const bool backlink)
 old_lower:
 	do {
 		if( backlink )
-			state->memtuples[old].prev = end;
+			state->memtuples[old].prev =  end;
 		end = old;
 		old = state->memtuples[old].next;
 		if( cnt++ >= bound )
@@ -1623,7 +1624,8 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		if(tmp.prev > j)				/* ... has prev not in heap  */
 			state->memtuples[tmp.prev].next = i; /* change to new loc */
 		if(tmp.next > j)				/* ... has succ not in heap  */
-			state->memtuples[tmp.next].prev = i; /* change to new loc */
+			state->memtuples[tmp.next].prev = i;
+										/* change to new loc */
 	}
 
 	dest = &state->memtuples[j];		/* new location in heap */
@@ -3466,6 +3468,7 @@ copytup_heap(Tuplesortstate *state, SortTuple *stup, void *tup)
 	TupleTableSlot *slot = (TupleTableSlot *) tup;
 	MinimalTuple tuple;
 	HeapTupleData htup;
+	bool isnull1;
 
 	/* copy the tuple into sort storage */
 	tuple = ExecCopySlotMinimalTuple(slot);
@@ -3477,7 +3480,8 @@ copytup_heap(Tuplesortstate *state, SortTuple *stup, void *tup)
 	stup->datum1 = heap_getattr(&htup,
 								state->sortKeys[0].ssup_attno,
 								state->tupDesc,
-								&stup->isnull1);
+								&isnull1);
+	stup->isnull1 = isnull1;
 }
 
 static void
@@ -3513,6 +3517,7 @@ readtup_heap(Tuplesortstate *state, SortTuple *stup,
 	MinimalTuple tuple = (MinimalTuple) palloc(tuplen);
 	char	   *tupbody = (char *) tuple + MINIMAL_TUPLE_DATA_OFFSET;
 	HeapTupleData htup;
+	bool isnull1;
 
 	USEMEM(state, GetMemoryChunkSpace(tuple));
 	/* read in the tuple proper */
@@ -3529,7 +3534,8 @@ readtup_heap(Tuplesortstate *state, SortTuple *stup,
 	stup->datum1 = heap_getattr(&htup,
 								state->sortKeys[0].ssup_attno,
 								state->tupDesc,
-								&stup->isnull1);
+								&isnull1);
+	stup->isnull1 = isnull1;
 }
 
 static void
@@ -3658,6 +3664,7 @@ static void
 copytup_cluster(Tuplesortstate *state, SortTuple *stup, void *tup)
 {
 	HeapTuple	tuple = (HeapTuple) tup;
+	bool isnull1;
 
 	/* copy the tuple into sort storage */
 	tuple = heap_copytuple(tuple);
@@ -3668,7 +3675,8 @@ copytup_cluster(Tuplesortstate *state, SortTuple *stup, void *tup)
 		stup->datum1 = heap_getattr(tuple,
 									state->indexInfo->ii_KeyAttrNumbers[0],
 									state->tupDesc,
-									&stup->isnull1);
+									&isnull1);
+	stup->isnull1 = isnull1;
 }
 
 static void
@@ -3698,6 +3706,7 @@ readtup_cluster(Tuplesortstate *state, SortTuple *stup,
 {
 	unsigned int t_len = tuplen - sizeof(ItemPointerData) - sizeof(int);
 	HeapTuple	tuple = (HeapTuple) palloc(t_len + HEAPTUPLESIZE);
+	bool isnull1;
 
 	USEMEM(state, GetMemoryChunkSpace(tuple));
 	/* Reconstruct the HeapTupleData header */
@@ -3719,7 +3728,8 @@ readtup_cluster(Tuplesortstate *state, SortTuple *stup,
 		stup->datum1 = heap_getattr(tuple,
 									state->indexInfo->ii_KeyAttrNumbers[0],
 									state->tupDesc,
-									&stup->isnull1);
+									&isnull1);
+	stup->isnull1 = isnull1;
 }
 
 
@@ -3902,6 +3912,7 @@ copytup_index(Tuplesortstate *state, SortTuple *stup, void *tup)
 	IndexTuple	tuple = (IndexTuple) tup;
 	unsigned int tuplen = IndexTupleSize(tuple);
 	IndexTuple	newtuple;
+	bool isnull1;
 
 	/* copy the tuple into sort storage */
 	newtuple = (IndexTuple) palloc(tuplen);
@@ -3912,7 +3923,8 @@ copytup_index(Tuplesortstate *state, SortTuple *stup, void *tup)
 	stup->datum1 = index_getattr(newtuple,
 								 1,
 								 RelationGetDescr(state->indexRel),
-								 &stup->isnull1);
+								 &isnull1);
+	stup->isnull1 = isnull1;
 }
 
 static void
@@ -3940,6 +3952,7 @@ readtup_index(Tuplesortstate *state, SortTuple *stup,
 {
 	unsigned int tuplen = len - sizeof(unsigned int);
 	IndexTuple	tuple = (IndexTuple) palloc(tuplen);
+	bool isnull1;
 
 	USEMEM(state, GetMemoryChunkSpace(tuple));
 	LogicalTapeReadExact(state->tapeset, tapenum,
@@ -3952,7 +3965,8 @@ readtup_index(Tuplesortstate *state, SortTuple *stup,
 	stup->datum1 = index_getattr(tuple,
 								 1,
 								 RelationGetDescr(state->indexRel),
-								 &stup->isnull1);
+								 &isnull1);
+	stup->isnull1 = isnull1;
 }
 
 static void
