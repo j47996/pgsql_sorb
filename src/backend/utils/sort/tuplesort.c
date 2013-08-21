@@ -1350,7 +1350,7 @@ sorb_merge(struct Tuplesortstate * state, int old, int new, const bool backlink)
 old_lower:
 	do {
 		if( backlink )
-			state->memtuples[old].prev =  end;
+			state->memtuples[old].prev = end;
 		end = old;
 		old = state->memtuples[old].next;
 		if( cnt++ >= bound )
@@ -1573,7 +1573,10 @@ sorb_reverse_chain(struct Tuplesortstate * state, int start)
 	for( this = state->list_end >= 0 ? state->list_end : start;
 		 (next = state->memtuples[this].next) >= 0;
 		 this = next)
+	{
 		state->memtuples[next].prev = this;
+		Assert(state->memtuples[next].prev == this);
+	}
 	state->list_end = this;
 	state->reverse_linkage = true;
 }
@@ -1627,8 +1630,10 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		dest->tupindex = 0;				/* ... setting run number 0	*/
 
 		*this = tmp;					/* element displaced by heap */
+Assert(tmp.prev < state->memtupcount);
 		if(tmp.prev > j)				/* ... has prev not in heap  */
 			state->memtuples[tmp.prev].next = i; /* change to new loc */
+Assert(tmp.next < state->memtupcount);
 		if(tmp.next > j)				/* ... has succ not in heap  */
 			state->memtuples[tmp.next].prev = i; /* change to new loc */
 	}
