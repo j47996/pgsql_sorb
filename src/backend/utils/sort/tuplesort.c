@@ -1614,6 +1614,7 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		 i = next, j++)
 	{
 		SortTuple	tmp;
+if(i<j) elog(PANIC, "heapify: i %d j %d", i, j);
 		Assert(i >= j);					/* item should not yet be in heap */
 		this = &state->memtuples[i];	/* old location in list */
 		if( i == j )
@@ -1629,13 +1630,14 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		dest->isnull1 = this->isnull1;	/*							*/
 		dest->tupindex = 0;				/* ... setting run number 0	*/
 
-		*this = tmp;					/* element displaced by heap */
-Assert(tmp.prev < state->memtupcount);
-		if(tmp.prev > j)				/* ... has prev not in heap  */
-			state->memtuples[tmp.prev].next = i; /* change to new loc */
-Assert(tmp.next < state->memtupcount);
-		if(tmp.next > j)				/* ... has succ not in heap  */
-			state->memtuples[tmp.next].prev = i; /* change to new loc */
+		if(tmp.next > 0)				/* element displaced by heap */
+		{								/* was still part of list */
+			*this = tmp;
+			if(tmp.prev > j)				/* ... has prev not in heap  */
+				state->memtuples[tmp.prev].next = i; /* change to new loc */
+			if(tmp.next > j)				/* ... has succ not in heap  */
+				state->memtuples[tmp.next].prev = i; /* change to new loc */
+		}
 	}
 
 	dest = &state->memtuples[j];		/* new location in heap */
@@ -1779,7 +1781,7 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			/*
 			 * Convert the remaining contents of memtuple[] into a heap. Each
 			 * tuple is marked as belonging to run number zero. The conversion
-			 * does not depend on memtupcount for a memmtuple[] endmark (only
+			 * does not depend on memtupcount for a memtuple[] endmark (only
 			 * as a valid count) but returns with it valid in both senses.
 			 */
 			heapify_sorted_list(state, state->list_start);
