@@ -1573,10 +1573,7 @@ sorb_reverse_chain(struct Tuplesortstate * state, int start)
 	for( this = state->list_end >= 0 ? state->list_end : start;
 		 (next = state->memtuples[this].next) >= 0;
 		 this = next)
-	{
 		state->memtuples[next].prev = this;
-		Assert(state->memtuples[next].prev == this);
-	}
 	state->list_end = this;
 	state->reverse_linkage = true;
 }
@@ -1609,12 +1606,12 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 	sorb_reverse_chain(state, start);
 
 	/* Walk list, copying to an in-order array */
-	for( i = start, j = 0;
-		 (next = state->memtuples[i].next) >= 0;
-		 i = next, j++)
+	for( i= start, j= 0, next = state->memtuples[i].next;
+		 next >= 0;
+		 i= next, next= state->memtuples[next].next, j++)
 	{
 		SortTuple	tmp;
-if(i<j) elog(PANIC, "heapify: i %d j %d", i, j);
+
 		Assert(i >= j);					/* item should not yet be in heap */
 		this = &state->memtuples[i];	/* old location in list */
 		if( i == j )
@@ -1630,14 +1627,11 @@ if(i<j) elog(PANIC, "heapify: i %d j %d", i, j);
 		dest->isnull1 = this->isnull1;	/*							*/
 		dest->tupindex = 0;				/* ... setting run number 0	*/
 
-		if(tmp.next > 0)				/* element displaced by heap */
-		{								/* was still part of list */
-			*this = tmp;
-			if(tmp.prev > j)				/* ... has prev not in heap  */
-				state->memtuples[tmp.prev].next = i; /* change to new loc */
-			if(tmp.next > j)				/* ... has succ not in heap  */
-				state->memtuples[tmp.next].prev = i; /* change to new loc */
-		}
+		*this = tmp;					/* element displaced by heap */
+		if(tmp.prev > j)				/* ... has prev not in heap  */
+			state->memtuples[tmp.prev].next = i; /* change to new loc */
+		if(tmp.next > j)				/* ... has succ not in heap  */
+			state->memtuples[tmp.next].prev = i; /* change to new loc */
 	}
 
 	dest = &state->memtuples[j];		/* new location in heap */
