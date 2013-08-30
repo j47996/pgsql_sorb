@@ -115,9 +115,9 @@
  * and reverse-access read.  We can handle all but the last easily; the
  * reverse-read requires a reverse-linked list.  This is built only on the first
  * reverse access (or the transition to a heap, for supporting the external
- * sort).  The additional link field makes the per-item data larger than
- * that used by the quicksort core; we might consider separating it and only
- * allocating when needed (XXX).
+ * sort).  The additional link field is shoehorned into an already-used field
+ * so the SortTuple structure is no larger, at the cost of more instructions
+ * to access.
  *
  * The progressive aspect (work being done during input) means that there is
  * potential for useful overlap between work done here and readaheads done
@@ -340,6 +340,7 @@ struct Tuplesortstate
 	 * <0, 0, >0 according as a<b, a=b, a>b.  The API must match
 	 * qsort_arg_comparator.
 	 */
+	unsigned	cmpcnt;
 	SortTupleComparator comparetup;
 
 	/*
@@ -523,7 +524,7 @@ struct Tuplesortstate
 #endif
 };
 
-#define COMPARETUP(state,a,b)	((*(state)->comparetup) (a, b, state))
+#define COMPARETUP(state,a,b)	((state)->cmpcnt++, (*(state)->comparetup) (a, b, state))
 #define COPYTUP(state,stup,tup) ((*(state)->copytup) (state, stup, tup))
 #define WRITETUP(state,tape,stup)	((*(state)->writetup) (state, tape, stup))
 #define READTUP(state,stup,tape,len) ((*(state)->readtup) (state, stup, tape, len))
@@ -702,6 +703,7 @@ trace_sort = true;
 			*hp = -1;
 		state->maxhook= 0;
 	}
+	state->cmpcnt = 0;
 
 	state->randomAccess = randomAccess;
 	state->bounded = false;
@@ -1066,10 +1068,12 @@ tuplesort_end(Tuplesortstate *state)
 	if (trace_sort)
 	{
 		if (state->tapeset)
-			elog(NOTICE, "external sort ended, %ld disk blocks used: %s",
+			elog(NOTICE, "external sort ended, %u cmps, %ld disk blocks used: %s",
+				 state->cmpcnt,
 				 spaceUsed, pg_rusage_show(&state->ru_start));
 		else
-			elog(NOTICE, "internal sort ended, %ld KB used: %s",
+			elog(NOTICE, "internal sort ended, %u cmps, %ld KB used: %s",
+				 state->cmpcnt,
 				 spaceUsed, pg_rusage_show(&state->ru_start));
 	}
 
