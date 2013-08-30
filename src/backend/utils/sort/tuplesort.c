@@ -1605,11 +1605,12 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 	sorb_reverse_chain(state, start);
 
 	/* Walk list, copying to an in-order array */
-	for( i = start, j = 0;
-		 (next = state->memtuples[i].next) >= 0;
-		 i = next, j++)
+	for( i= start, j= 0, next = state->memtuples[i].next;
+		 next >= 0;
+		 i= next, next= state->memtuples[next].next, j++)
 	{
 		SortTuple	tmp;
+
 		Assert(i >= j);					/* item should not yet be in heap */
 		this = &state->memtuples[i];	/* old location in list */
 		if( i == j )
