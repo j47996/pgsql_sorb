@@ -509,7 +509,8 @@ struct Tuplesortstate
 	 * "list_end" is the current list tail for the hook-0 list while in
 	 * phases 1/2, and the last list item for which a reverse-chain has
 	 * been built by phase 3 (final merge).
-	 * "run_up" identifies, for phase 1, the current input run direction.
+	 * "runlen" identifies, for phase 1, the current input run direction
+	 * and size, negative indicating an decreasing-order run.
 	 * "list_start" is the head of the sorted list after phase 3.
 	 * "reverse_linkage" is true once a complete reverse chain is built.
 	 * We also use "mergefreelist".
@@ -519,7 +520,7 @@ struct Tuplesortstate
 	int			maxhook;
 	int			list_start;
 	int			list_end;
-	bool		run_up;
+	int			runlen;
 	bool		reverse_linkage;
 
 	/*
@@ -1447,16 +1448,18 @@ sorb_link(struct Tuplesortstate * state, int new)
 {
 	int head = state->runhooks[0];
 	int end;
+	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
 
 	if ( head >= 0 )
 	{	/* not 1st ever tuple */
 
 		if( state->memtuples[head].next == -1 )
 		{	/* 2nd in run; establishes run direction */
-			if( (state->run_up = (COMPARETUP(state, &state->memtuples[head],
-												&state->memtuples[new]) <= 0)) )
-				/* Non-descending order run */
-				if( state->bounded  &&  1 == state->bound )
+			if( (COMPARETUP(state, &state->memtuples[head],
+												&state->memtuples[new]) <= 0) )
+			{	/* Non-descending order run */
+				state->runlen = 1;
+				if( 1 == bound )
 				{	/* run already longer than required; drop the new one */
 					free_sort_tuple(state, &state->memtuples[new]);
 					state->memtupcount = new;
@@ -1466,8 +1469,10 @@ sorb_link(struct Tuplesortstate * state, int new)
 					state->memtuples[new].next = -1;
 					state->memtuples[head].next = state->list_end = new;
 				}
+			}
 			else /* Descending-order run */
-				if( state->bounded  &&  1 == state->bound )
+			{
+				if( 1 == state->bound )
 				{	/* run already longer than required; drop the head one */
 					free_sort_tuple(state, &state->memtuples[head]);
 					state->memtuples[head].tuple = state->memtuples[new].tuple;
@@ -1477,26 +1482,30 @@ sorb_link(struct Tuplesortstate * state, int new)
 				}
 				else
 				{
+					state->runlen = -1;
 					state->memtuples[new].next = head;
 					state->runhooks[0] = new;
+					state->memtuples[head].prev = new;
 				}
+			}
 			return;	/* 2-element list is on hook 0 */
 		}
 
 		/* run direction established */
-		if( state->run_up )
+		if( state->runlen > 0 )
 		{	/* Non-descending order run */
 			end = state->list_end;
 			if( (COMPARETUP(state, &state->memtuples[end],
 								   &state->memtuples[new]) <= 0) )
 			{	/* new tuple extends run */
-				if( state->bounded  &&  new+1-head > state->bound )
+				if( state->runlen >= bound )
 				{	/* run now longer than required; drop the new one */
 					free_sort_tuple(state, &state->memtuples[new]);
 					state->memtupcount = new;
 				}
 				else
 				{
+					++state->runlen;
 					state->memtuples[new].next = -1;
 					state->memtuples[end].next = state->list_end = new;
 				}
@@ -1508,17 +1517,21 @@ sorb_link(struct Tuplesortstate * state, int new)
 			if( (COMPARETUP(state, &state->memtuples[head],
 								   &state->memtuples[new]) > 0) )
 			{	/* new tuple extends run */
-				end = state->list_end;
-				if( state->bounded  &&  new+1-end > state->bound )
+				if( -state->runlen >= bound )
 				{	/* run now longer than required; drop the largest one */
-					state->memtuples[state->list_end = end-1].next = -1;
+					end = state->list_end;
 					free_sort_tuple(state, &state->memtuples[end]);
 					state->memtuples[end].next = state->mergefreelist;
 					state->mergefreelist = end;
+					state->list_end = end = state->memtuples[end].prev;
+					state->memtuples[end].next = -1;
 				}
+				else
+					--state->runlen;
 
 				state->memtuples[new].next = head;
 				state->runhooks[0] = new;
+				state->memtuples[head].prev = new;
 				return;	/* >=2 element list, on hook 0 */
 			}
 		}
