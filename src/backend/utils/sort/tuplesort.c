@@ -1551,9 +1551,14 @@ sorb_link(struct Tuplesortstate * state, int new)
 				start = sorb_merge(state, state->runhooks[hook], start, false);
 				state->runhooks[hook] = -1;
 			}
-			state->runhooks[hook] = start;
+			/* all hooks up to "hook" now free; can use top one for exp schedule */
+			/* or lower to save memory for bounded case */
 			if( hook > state->maxhook )
-				state->maxhook = hook;
+				if ( state->bounded  &&  1<<hook > state->bound - state->bound/4 )
+					--hook;
+				else
+					state->maxhook = hook;
+			state->runhooks[hook] = start;
 		}
 	}
 
