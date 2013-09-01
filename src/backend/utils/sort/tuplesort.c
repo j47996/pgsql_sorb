@@ -94,7 +94,7 @@
  * As an alternate to the quicksort core used for the internal sort we
  * can use "Sorb".  This is an internal merge sort, with optimal merge
  * scheduling.
- * The algothithm is from Software Development International, Winter 1991.
+ * The algorithm is from Software Development International, Winter 1991.
  *
  * Characteristics:
  * + The sort is progressive, stable and comparison-based.
@@ -108,6 +108,9 @@
  * + Handling bounded-size output is done during the sort.  We could implement
  *   replicas with/without bounding if the repeated testing of the feature
  *   is a performance issue.
+ * - The memory usage for bounded-size output is larger than that for the older
+ *   bounded-heap implementation.  We could implement a freelist if this is an
+ *   issue. It might cost more processing also; this is unclear.
  * + Handling of unique output could likewise be done during the sort if
  *   there are use cases (the existing module interface does not support this).
  *
@@ -128,26 +131,27 @@
  *
  * Internals:
  *  Sorb runs in three phases.
- * + Run-linker:  Raw input is linked into a sorted ascending list for as
+ * 1) Run-linker:  Raw input is linked into a sorted ascending list for as
  *  long as a non-descending or descending run persists.  The minimum run
  *  length (apart from the very last input datum) is two, on random input
  *  the average run length is 2.7 and on presorted input the entire stream
  *  is one run (and checked as such).
- * + Merge-scheduler:  A short (~30) array of hooks is maintained on which
+ * 2) Merge-scheduler:  A short (~30) array of hooks is maintained on which
  *  can be hung sorted list.  A list produced by the linker is either
  *  hung on the first hook (if the hook is free) or merged with the list
  *  taken from the hook.  Merging is repeated working along the array of
  *  hooks until a free hook has been reached.  The array size is a constraint
  *  on the maximum data count; n hooks handling (worst-case) 2^(n+1)-1.  Thus
  *  31 hooks manages 4G data elements.
- * + Collector:  On input EOF the hooks array is swept from start to end
+ * 3) Collector:  On input EOF the hooks array is swept from start to end
  *  merging any lists found.  The final list is now in sorted order and
  *  can be walked from start to end to output the data.
  *
  * Possible extensions:
  *
- *  As previous noted, building in a unique-ifier. cf. state->enforceUnique
- *  which checks rather than filtering.
+ *  As previous noted, building in a unique-ifier. (vs. state->enforceUnique
+ * which checks rather than filtering). The benefit would rise with the
+ * proportion of duplicates in the input, but vary with their layout.
  *
  *  If the input keys have a well-distributed most-significant set of bits,
  * eg text, it is possible to front-end Sorb with one stage of big-endian
@@ -159,8 +163,9 @@
  * (integer data, N= 10^3 to 10^8) when using M=256 bins; worse with
  * fewer bins and/or more data.
  *  The cost is more memory; still O(log n) for this component but the
- * crossover point where the O(n) become larger is n ~= 2000.  And a
+ * crossover point where the O(n) becomes larger is n ~= 2000. There is a
  * certain amount of coding complexity.
+ * The index-hash case might use this.
  *
  *  We could implement output-progressivity for the final list merge,
  * only doing a comparison between the head elements of the penultimate
@@ -175,8 +180,8 @@
  * This would ease memory-pressure but probably be less efficient than
  * the current one-shot free.  The peak memory usa would not change.
  * 
- *  There is potential for an MP Sorb implementation.  The merge stages
- * are independent apart from the ordering required to maintain a
+ *  There is potential for a low-order MP Sorb implementation.  The merge
+ * stages are independent apart from the ordering required to maintain a
  * stable sort.  The coding complexity would be large.
  *
  * ==============
@@ -507,6 +512,7 @@ struct Tuplesortstate
 	 * been built by phase 3 (final merge).
 	 * "run_up" identifies, for phase 1, the current input run direction.
 	 * "list_start" is the head of the sorted list after phase 3.
+	 * "reverse_linkage" is true once a complete reverse chain is built.
 	 */
 #define NHOOKS 40
 	int			runhooks[NHOOKS];
