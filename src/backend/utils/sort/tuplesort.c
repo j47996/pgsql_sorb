@@ -109,8 +109,8 @@
  *   replicas with/without bounding if the repeated testing of the feature
  *   is a performance issue.
  * - The memory usage for bounded-size output is larger than that for the older
- *   bounded-heap implementation.  We could implement a freelist if this is an
- *   issue. It might cost more processing also; this is unclear.
+ *   bounded-heap implementation, due to the in-progress merge sublists.
+ *   It might cost more processing also; this is unclear.
  * + Handling of unique output could likewise be done during the sort if
  *   there are use cases (the existing module interface does not support this).
  *
@@ -268,7 +268,7 @@ bool		optimize_bounded_sort = true;
  * a copy; the alternative would be a specialised copy which adjusted pointers.
  * For the transition from sorb to tapes and to support reverse-access, we need
  * a reverse index to give us a doubly-linked list; this is shoehorned into the
- * upper bits of the integer holding "isnull1";
+ * upper bits of the integer holding "isnull1".
  */
 #define PG_INT_BITS ((sizeof(int) * CHAR_BIT))
 
@@ -510,16 +510,18 @@ struct Tuplesortstate
 	 * "list_end" is the current list tail for the hook-0 list while in
 	 * phases 1/2, and the last list item for which a reverse-chain has
 	 * been built by phase 3 (final merge).
-	 * "run_up" identifies, for phase 1, the current input run direction.
+	 * "runlen" identifies, for phase 1, the current input run direction
+	 * and size, negative indicating an decreasing-order run.
 	 * "list_start" is the head of the sorted list after phase 3.
 	 * "reverse_linkage" is true once a complete reverse chain is built.
+	 * We also use "mergefreelist".
 	 */
 #define NHOOKS 40
 	int			runhooks[NHOOKS];
 	int			maxhook;
 	int			list_start;
 	int			list_end;
-	bool		run_up;
+	int			runlen;
 	bool		reverse_linkage;
 
 	/*
@@ -708,6 +710,7 @@ trace_sort = true;
 		for(hp = state->runhooks; hp < state->runhooks + NHOOKS; hp++)
 			*hp = -1;
 		state->maxhook= 0;
+		state->mergefreelist= -1;
 	}
 	state->cmpcnt = 0;
 
@@ -1414,17 +1417,28 @@ bound_reached:
 		state->list_end = end;	/* backlinking done to here */
 
 	/* We can free up the tuple memory, but not the SortTuple structs. */
-	/* Could potentially build a freelist of them, used preferentially */
-	/* for new tuples.												   */
-	while( old != -1 )
+	/* Put the structs on a freelist for re-use by new tuples.         */
+	if( old >= 0 )
 	{
-		free_sort_tuple(state, &state->memtuples[old]);
-		old = state->memtuples[old].next;
+		int i;
+		for(i= old;; i= end)
+		{
+			free_sort_tuple(state, &state->memtuples[i]);
+			if( (end= state->memtuples[i].next) < 0 ) break;
+		}
+		state->memtuples[i].next= state->mergefreelist;
+		state->mergefreelist= old;
 	}
-	while( new != -1 )
+	if( new >= 0 )
 	{
-		free_sort_tuple(state, &state->memtuples[new]);
-		new = state->memtuples[new].next;
+		int i;
+		for(i= new;; i= end)
+		{
+			free_sort_tuple(state, &state->memtuples[i]);
+			if( (end= state->memtuples[i].next) < 0 ) break;
+		}
+		state->memtuples[i].next= state->mergefreelist;
+		state->mergefreelist= new;
 	}
 	return start;
 }
@@ -1439,16 +1453,18 @@ sorb_link(struct Tuplesortstate * state, int new)
 {
 	int head = state->runhooks[0];
 	int end;
+	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
 
 	if ( head >= 0 )
 	{	/* not 1st ever tuple */
 
 		if( state->memtuples[head].next == -1 )
 		{	/* 2nd in run; establishes run direction */
-			if( (state->run_up = (COMPARETUP(state, &state->memtuples[head],
-												&state->memtuples[new]) <= 0)) )
-				/* Non-descending order run */
-				if( state->bounded  &&  1 == state->bound )
+			if( (COMPARETUP(state, &state->memtuples[head],
+												&state->memtuples[new]) <= 0) )
+			{	/* Non-descending order run */
+				state->runlen = 1;
+				if( 1 == bound )
 				{	/* run already longer than required; drop the new one */
 					free_sort_tuple(state, &state->memtuples[new]);
 					state->memtupcount = new;
@@ -1458,8 +1474,10 @@ sorb_link(struct Tuplesortstate * state, int new)
 					state->memtuples[new].next = -1;
 					state->memtuples[head].next = state->list_end = new;
 				}
+			}
 			else /* Descending-order run */
-				if( state->bounded  &&  1 == state->bound )
+			{
+				if( 1 == state->bound )
 				{	/* run already longer than required; drop the head one */
 					free_sort_tuple(state, &state->memtuples[head]);
 					state->memtuples[head].tuple = state->memtuples[new].tuple;
@@ -1469,26 +1487,30 @@ sorb_link(struct Tuplesortstate * state, int new)
 				}
 				else
 				{
+					state->runlen = -1;
 					state->memtuples[new].next = head;
 					state->runhooks[0] = new;
+					state->memtuples[head].prev = new;
 				}
+			}
 			return;	/* 2-element list is on hook 0 */
 		}
 
 		/* run direction established */
-		if( state->run_up )
+		if( state->runlen > 0 )
 		{	/* Non-descending order run */
 			end = state->list_end;
 			if( (COMPARETUP(state, &state->memtuples[end],
 								   &state->memtuples[new]) <= 0) )
 			{	/* new tuple extends run */
-				if( state->bounded  &&  new+1-head > state->bound )
+				if( state->runlen >= bound )
 				{	/* run now longer than required; drop the new one */
 					free_sort_tuple(state, &state->memtuples[new]);
 					state->memtupcount = new;
 				}
 				else
 				{
+					++state->runlen;
 					state->memtuples[new].next = -1;
 					state->memtuples[end].next = state->list_end = new;
 				}
@@ -1500,20 +1522,21 @@ sorb_link(struct Tuplesortstate * state, int new)
 			if( (COMPARETUP(state, &state->memtuples[head],
 								   &state->memtuples[new]) > 0) )
 			{	/* new tuple extends run */
-				end = state->list_end;
-				if( state->bounded  &&  new+1-end > state->bound )
+				if( -state->runlen >= bound )
 				{	/* run now longer than required; drop the largest one */
+					end = state->list_end;
 					free_sort_tuple(state, &state->memtuples[end]);
-
-					/* hmm, has this gotten expensive? */
-					memmove( &state->memtuples[end], &state->memtuples[end+1],
-						(new-end)*sizeof(SortTuple) );
+					state->memtuples[end].next = state->mergefreelist;
+					state->mergefreelist = end;
+					state->list_end = end = state->memtuples[end].prev;
 					state->memtuples[end].next = -1;
-					state->memtupcount = new;
 				}
+				else
+					--state->runlen;
 
 				state->memtuples[new].next = head;
 				state->runhooks[0] = new;
+				state->memtuples[head].prev = new;
 				return;	/* >=2 element list, on hook 0 */
 			}
 		}
@@ -1533,9 +1556,14 @@ sorb_link(struct Tuplesortstate * state, int new)
 				start = sorb_merge(state, state->runhooks[hook], start, false);
 				state->runhooks[hook] = -1;
 			}
-			state->runhooks[hook] = start;
+			/* all hooks up to "hook" now free; can use top one for exp schedule */
+			/* or lower to save memory for bounded case */
 			if( hook > state->maxhook )
-				state->maxhook = hook;
+				if ( state->bounded  &&  1<<hook > state->bound - state->bound/4 )
+					--hook;
+				else
+					state->maxhook = hook;
+			state->runhooks[hook] = start;
 		}
 	}
 
@@ -1744,12 +1772,20 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			 * the merging of all in-progress merge lists. The final list is
 			 * then walkable in sorted order.
 			 */
-			if (state->memtupcount >= state->memtupsize - 1)
+			if ((item= state->mergefreelist) >= 0)
 			{
-				(void) grow_memtuples(state);
-				Assert(state->memtupcount < state->memtupsize);
+				state->mergefreelist = state->memtuples[item].next;
+				state->memtuples[item] = *tuple;
 			}
-			state->memtuples[(item = state->memtupcount++)] = *tuple;
+			else
+			{
+				if (state->memtupcount >= state->memtupsize - 1)
+				{
+					(void) grow_memtuples(state);
+					Assert(state->memtupcount < state->memtupsize);
+				}
+				state->memtuples[(item = state->memtupcount++)] = *tuple;
+			}
 
 			/* 1st & 2nd sorb stages */
 			sorb_link(state, item);
