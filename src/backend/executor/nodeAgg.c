@@ -330,7 +330,7 @@ initialize_aggregates(AggState *aggstate,
 									 peraggstate->sortOperators,
 									 peraggstate->sortCollations,
 									 peraggstate->sortNullsFirst,
-									 work_mem, false);
+									 work_mem, false, false);
 		}
 
 		/*

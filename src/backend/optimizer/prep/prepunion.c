@@ -628,7 +628,7 @@ generate_nonunion_plan(SetOperationStmt *op, PlannerInfo *root,
 					   (op->op == SETOP_INTERSECT) ? "INTERSECT" : "EXCEPT");
 
 	if (!use_hash)
-		plan = (Plan *) make_sort_from_sortclauses(root, groupList, plan);
+		plan = (Plan *) make_sort_from_sortclauses(root, groupList, plan, false);
 
 	/*
 	 * Finally, add a SetOp plan node to generate the correct output.
@@ -778,7 +778,7 @@ make_union_unique(SetOperationStmt *op, Plan *plan,
 	else
 	{
 		/* Sort and Unique */
-		plan = (Plan *) make_sort_from_sortclauses(root, groupList, plan);
+		plan = (Plan *) make_sort_from_sortclauses(root, groupList, plan, true);
 		plan = (Plan *) make_unique(plan, groupList);
 		plan->plan_rows = dNumGroups;
 		/* We know the sort order of the result */

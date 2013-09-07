@@ -52,7 +52,7 @@ extern RecursiveUnion *make_recursive_union(List *tlist,
 extern Sort *make_sort_from_pathkeys(PlannerInfo *root, Plan *lefttree,
 						List *pathkeys, double limit_tuples);
 extern Sort *make_sort_from_sortclauses(PlannerInfo *root, List *sortcls,
-						   Plan *lefttree);
+						   Plan *lefttree, bool dedup);
 extern Sort *make_sort_from_groupcols(PlannerInfo *root, List *groupcls,
 						 AttrNumber *grpColIdx, Plan *lefttree);
 extern Agg *make_agg(PlannerInfo *root, List *tlist, List *qual,

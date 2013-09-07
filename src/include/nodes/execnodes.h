@@ -1657,6 +1657,7 @@ typedef struct SortState
 {
 	ScanState	ss;				/* its first field is NodeTag */
 	bool		randomAccess;	/* need random access to sort output? */
+	bool		dedup;			/* uniquify where possible during sort */
 	bool		bounded;		/* is the result set bounded? */
 	int64		bound;			/* if bounded, how many tuples are needed */
 	bool		sort_Done;		/* sort completed yet? */

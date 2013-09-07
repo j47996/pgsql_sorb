@@ -152,7 +152,7 @@ static MergeJoin *make_mergejoin(List *tlist,
 			   JoinType jointype);
 static Sort *make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 		  AttrNumber *sortColIdx, Oid *sortOperators,
-		  Oid *collations, bool *nullsFirst,
+		  Oid *collations, bool *nullsFirst, bool dedup,
 		  double limit_tuples);
 static Plan *prepare_sort_from_pathkeys(PlannerInfo *root,
 						   Plan *lefttree, List *pathkeys,
@@ -812,7 +812,7 @@ create_merge_append_plan(PlannerInfo *root, MergeAppendPath *best_path)
 		if (!pathkeys_contained_in(pathkeys, subpath->pathkeys))
 			subplan = (Plan *) make_sort(root, subplan, numsortkeys,
 										 sortColIdx, sortOperators,
-										 collations, nullsFirst,
+										 collations, nullsFirst, false,
 										 best_path->limit_tuples);
 
 		subplans = lappend(subplans, subplan);
@@ -1064,7 +1064,7 @@ create_unique_plan(PlannerInfo *root, UniquePath *best_path)
 			sortList = lappend(sortList, sortcl);
 			groupColPos++;
 		}
-		plan = (Plan *) make_sort_from_sortclauses(root, sortList, subplan);
+		plan = (Plan *) make_sort_from_sortclauses(root, sortList, subplan, true);
 		plan = (Plan *) make_unique(plan, sortList);
 	}
 
@@ -3755,7 +3755,7 @@ make_mergejoin(List *tlist,
 static Sort *
 make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 		  AttrNumber *sortColIdx, Oid *sortOperators,
-		  Oid *collations, bool *nullsFirst,
+		  Oid *collations, bool *nullsFirst, bool dedup,
 		  double limit_tuples)
 {
 	Sort	   *node = makeNode(Sort);
@@ -3781,6 +3781,7 @@ make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 	node->sortOperators = sortOperators;
 	node->collations = collations;
 	node->nullsFirst = nullsFirst;
+	node->dedup = dedup;
 
 	return node;
 }
@@ -4127,7 +4128,7 @@ make_sort_from_pathkeys(PlannerInfo *root, Plan *lefttree, List *pathkeys,
 	/* Now build the Sort node */
 	return make_sort(root, lefttree, numsortkeys,
 					 sortColIdx, sortOperators, collations,
-					 nullsFirst, limit_tuples);
+					 nullsFirst, false, limit_tuples);
 }
 
 /*
@@ -4138,7 +4139,7 @@ make_sort_from_pathkeys(PlannerInfo *root, Plan *lefttree, List *pathkeys,
  *	  'lefttree' is the node which yields input tuples
  */
 Sort *
-make_sort_from_sortclauses(PlannerInfo *root, List *sortcls, Plan *lefttree)
+make_sort_from_sortclauses(PlannerInfo *root, List *sortcls, Plan *lefttree, bool dedup)
 {
 	List	   *sub_tlist = lefttree->targetlist;
 	ListCell   *l;
@@ -4170,7 +4171,7 @@ make_sort_from_sortclauses(PlannerInfo *root, List *sortcls, Plan *lefttree)
 
 	return make_sort(root, lefttree, numsortkeys,
 					 sortColIdx, sortOperators, collations,
-					 nullsFirst, -1.0);
+					 nullsFirst, dedup, -1.0);
 }
 
 /*
@@ -4225,7 +4226,7 @@ make_sort_from_groupcols(PlannerInfo *root,
 
 	return make_sort(root, lefttree, numsortkeys,
 					 sortColIdx, sortOperators, collations,
-					 nullsFirst, -1.0);
+					 nullsFirst, false, -1.0);
 }
 
 static Material *

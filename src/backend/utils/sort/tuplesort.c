@@ -111,8 +111,11 @@
  * - The memory usage for bounded-size output is larger than that for the older
  *   bounded-heap implementation, due to the in-progress merge sublists.
  *   It might cost more processing also; this is unclear.
- * + Handling of unique output could likewise be done during the sort if
- *   there are use cases (the existing module interface does not support this).
+ * + Handling of unique output is done during the sort; this is requested for
+ *   the heap-sort case when called under a Unique node. The dedup is only
+ *   done in sorb, not the tape sort; and the planner cost estimates have not
+ *   been adjusted to account for the dedup.  Again, replica implementations
+ *   might be considered.
  *
  * Random-access is limited in this module to rescan, mark- and restore-pos,
  * and reverse-access read.  We can handle all but the last easily; the
@@ -462,6 +465,7 @@ struct Tuplesortstate
 	 * These variables are specific to the MinimalTuple case; they are set by
 	 * tuplesort_begin_heap and used only by the MinimalTuple routines.
 	 */
+	bool		dedup;
 	TupleDesc	tupDesc;
 	SortSupport sortKeys;		/* array of length nKeys */
 
@@ -715,6 +719,7 @@ trace_sort = true;
 	state->cmpcnt = 0;
 
 	state->randomAccess = randomAccess;
+	state->dedup = false;
 	state->bounded = false;
 	state->boundUsed = false;
 	state->allowedMem = workMem * (int64) 1024;
@@ -752,7 +757,7 @@ tuplesort_begin_heap(TupleDesc tupDesc,
 					 int nkeys, AttrNumber *attNums,
 					 Oid *sortOperators, Oid *sortCollations,
 					 bool *nullsFirstFlags,
-					 int workMem, bool randomAccess)
+					 int workMem, bool dedup, bool randomAccess)
 {
 	Tuplesortstate *state = tuplesort_begin_common(workMem, randomAccess);
 	MemoryContext oldcontext;
@@ -765,11 +770,13 @@ tuplesort_begin_heap(TupleDesc tupDesc,
 #ifdef TRACE_SORT
 	if (trace_sort)
 		elog(NOTICE,
-			 "begin heap sort: nkeys = %d, workMem = %d, randomAccess = %c",
-			 nkeys, workMem, randomAccess ? 't' : 'f');
+			 "begin heap sort: nkeys = %d, workMem = %d, dedup = %c, randomAccess = %c",
+			 nkeys, workMem,
+			 dedup ? 't' : 'f', randomAccess ? 't' : 'f');
 #endif
 
 	state->nKeys = nkeys;
+	state->dedup = dedup;
 
 	TRACE_POSTGRESQL_SORT_START(HEAP_SORT,
 								false,	/* no unique check */
@@ -1352,8 +1359,22 @@ sorb_merge(struct Tuplesortstate * state, int old, int new, const bool backlink)
 	int end = -1;
 	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
 	unsigned cnt = 1;
+	int cmp;
 
-	if( COMPARETUP(state, &state->memtuples[old], &state->memtuples[new]) > 0 )
+	cmp = COMPARETUP(state, &state->memtuples[old], &state->memtuples[new]);
+	if( state->dedup  &&  cmp == 0 )
+	{				/* A dup; drop one */
+		int i = new;
+		new = state->memtuples[new].next;
+		free_sort_tuple(state, &state->memtuples[i]);
+		state->memtuples[i].next = state->mergefreelist;
+		state->mergefreelist = i;
+		if( new < 0 )
+			return old;
+		cmp = COMPARETUP(state, &state->memtuples[old], &state->memtuples[new]);
+	}
+
+	if( cmp > 0 )
 	{
 		start = new;
 		goto new_lower;
@@ -1384,8 +1405,21 @@ old_lower:
 			}
 			return start;
 		}
-	} while( COMPARETUP(state, &state->memtuples[old],
-							   &state->memtuples[new]) <= 0 );
+
+		cmp = COMPARETUP(state, &state->memtuples[old], &state->memtuples[new]);
+		if( state->dedup  &&  cmp == 0 )
+		{
+			int i = new;
+			new = state->memtuples[new].next;
+			free_sort_tuple(state, &state->memtuples[i]);
+			state->memtuples[i].next = state->mergefreelist;
+			state->mergefreelist = i;
+			if( new < 0 )
+				return start;
+			cmp = COMPARETUP(state, &state->memtuples[old], &state->memtuples[new]);
+		}
+	} while( cmp <= 0 );
+
 	state->memtuples[end].next = new;
 
 new_lower:
@@ -1406,8 +1440,21 @@ new_lower:
 			}
 			return start;
 		}
-	} while( COMPARETUP(state, &state->memtuples[old],
-							   &state->memtuples[new]) > 0 );
+
+		cmp = COMPARETUP(state, &state->memtuples[old], &state->memtuples[new]);
+		if( state->dedup  &&  cmp == 0 )
+		{
+			int i = old;
+			old = state->memtuples[old].next;
+			free_sort_tuple(state, &state->memtuples[i]);
+			state->memtuples[i].next = state->mergefreelist;
+			state->mergefreelist = i;
+			if( old < 0 )
+				return start;
+			cmp = COMPARETUP(state, &state->memtuples[old], &state->memtuples[new]);
+		}
+	} while( cmp > 0 );
+
 	state->memtuples[end].next = old;
 	goto old_lower;
 
@@ -1454,21 +1501,21 @@ sorb_link(struct Tuplesortstate * state, int new)
 	int head = state->runhooks[0];
 	int end;
 	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
+	int cmp;
 
 	if ( head >= 0 )
 	{	/* not 1st ever tuple */
 
 		if( state->memtuples[head].next == -1 )
 		{	/* 2nd in run; establishes run direction */
-			if( (COMPARETUP(state, &state->memtuples[head],
-												&state->memtuples[new]) <= 0) )
+			cmp = COMPARETUP(state, &state->memtuples[head], &state->memtuples[new]);
+			if( state->dedup  &&  cmp == 0 )
+				goto drop;					/* A duplicate; drop the new one */
+			else if( (cmp <= 0) )
 			{	/* Non-descending order run */
 				state->runlen = 1;
 				if( 1 == bound )
-				{	/* run already longer than required; drop the new one */
-					free_sort_tuple(state, &state->memtuples[new]);
-					state->memtupcount = new;
-				}
+					goto drop;				/* run already longer than required; drop the new one */
 				else
 				{
 					state->memtuples[new].next = -1;
@@ -1500,14 +1547,13 @@ sorb_link(struct Tuplesortstate * state, int new)
 		if( state->runlen > 0 )
 		{	/* Non-descending order run */
 			end = state->list_end;
-			if( (COMPARETUP(state, &state->memtuples[end],
-								   &state->memtuples[new]) <= 0) )
+			cmp = COMPARETUP(state, &state->memtuples[end], &state->memtuples[new]);
+			if( state->dedup  &&  cmp == 0 )
+				goto drop;					/* A duplicate; drop the new one */
+			else if( (cmp <= 0) )
 			{	/* new tuple extends run */
 				if( state->runlen >= bound )
-				{	/* run now longer than required; drop the new one */
-					free_sort_tuple(state, &state->memtuples[new]);
-					state->memtupcount = new;
-				}
+					goto drop;				/* run now longer than required; drop the new one */
 				else
 				{
 					++state->runlen;
@@ -1519,8 +1565,10 @@ sorb_link(struct Tuplesortstate * state, int new)
 		}
 		else
 		{	/* Descending-order run */
-			if( (COMPARETUP(state, &state->memtuples[head],
-								   &state->memtuples[new]) > 0) )
+			cmp = COMPARETUP(state, &state->memtuples[head], &state->memtuples[new]);
+			if( state->dedup  &&  cmp == 0 )
+				goto drop;					/* A duplicate; drop the new one */
+			else if( (cmp > 0) )
 			{	/* new tuple extends run */
 				if( -state->runlen >= bound )
 				{	/* run now longer than required; drop the largest one */
@@ -1556,7 +1604,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 				start = sorb_merge(state, state->runhooks[hook], start, false);
 				state->runhooks[hook] = -1;
 			}
-			/* all hooks up to "hook" now free; can use top one for exp schedule */
+			/* all hooks up to "hook" now free; use top one for exp schedule */
 			/* or lower to save memory for bounded case */
 			if( hook > state->maxhook )
 				if ( state->bounded  &&  1<<hook > state->bound - state->bound/4 )
@@ -1570,6 +1618,12 @@ sorb_link(struct Tuplesortstate * state, int new)
 	state->memtuples[new].next = -1;
 	state->runhooks[0] = state->list_end = new;
 	return;	/* 1-element list, on hook 0 */
+
+drop:
+	/* A duplicate; drop the new one */
+	free_sort_tuple(state, &state->memtuples[new]);
+	state->memtupcount = new;
+	return;
 }
 
 /* Third-stage of sorb: merge intermediate runs to final list. */
