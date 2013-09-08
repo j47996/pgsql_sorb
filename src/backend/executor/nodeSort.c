@@ -173,7 +173,7 @@ ExecInitSort(Sort *node, EState *estate, int eflags)
 										 EXEC_FLAG_BACKWARD |
 										 EXEC_FLAG_MARK)) != 0;
 
-	sortstate->dedup = false;
+	sortstate->dedup = node->dedup;
 	sortstate->bounded = false;
 	sortstate->sort_Done = false;
 	sortstate->tuplesortstate = NULL;

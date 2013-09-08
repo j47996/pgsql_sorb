@@ -732,6 +732,8 @@ make_union_unique(SetOperationStmt *op, Plan *plan,
 	double		dNumGroups;
 	long		numGroups;
 
+elog(LOG, "%s", __FUNCTION__);
+
 	/* Identify the grouping semantics */
 	groupList = generate_setop_grouplist(op, plan->targetlist);
 
