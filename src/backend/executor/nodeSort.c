@@ -43,6 +43,8 @@ ExecSort(SortState *node)
 	Tuplesortstate *tuplesortstate;
 	TupleTableSlot *slot;
 
+elog(LOG,"%s: SortState %p dedup %c TupleSortState %p", __FUNCTION__,
+	   	node, node->dedup?'t':'f', node->tuplesortstate);
 	/*
 	 * get state info from node
 	 */
@@ -154,6 +156,7 @@ ExecInitSort(Sort *node, EState *estate, int eflags)
 {
 	SortState  *sortstate;
 
+elog(LOG,"%s: Sort %p", __FUNCTION__, node);
 	SO1_printf("ExecInitSort: %s\n",
 			   "initializing sort node");
 
@@ -174,6 +177,7 @@ ExecInitSort(Sort *node, EState *estate, int eflags)
 										 EXEC_FLAG_MARK)) != 0;
 
 	sortstate->dedup = node->dedup;
+elog(LOG,"%s: dedup %c", __FUNCTION__, sortstate->dedup?'t':'f');
 	sortstate->bounded = false;
 	sortstate->sort_Done = false;
 	sortstate->tuplesortstate = NULL;
@@ -214,6 +218,8 @@ ExecInitSort(Sort *node, EState *estate, int eflags)
 	SO1_printf("ExecInitSort: %s\n",
 			   "sort node initialized");
 
+elog(LOG,"%s: dedup %c  ret SortState %p ", __FUNCTION__,
+			   	sortstate->dedup?'t':'f', sortstate);
 	return sortstate;
 }
 

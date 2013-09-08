@@ -1046,7 +1046,10 @@ tuplesort_set_bound(Tuplesortstate *state, int64 bound)
 	state->bounded = true;
 	state->bound = (int) bound;
 	if( state->status == TSS_SORB )
+{
 		state->boundUsed = true;
+		elog(LOG,"%s: set boundUsed", __FUNCTION__);
+}
 }
 
 /*

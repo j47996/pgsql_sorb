@@ -135,6 +135,7 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 	List	   *subps;
 	ListCell   *l;
 
+elog(LOG,"%s: Plan %p", __FUNCTION__, node);
 	/*
 	 * do nothing when we get to the end of a leaf on tree.
 	 */
@@ -356,6 +357,7 @@ ExecProcNode(PlanState *node)
 {
 	TupleTableSlot *result;
 
+elog(LOG,"%s: PlanState %p", __FUNCTION__, node);
 	CHECK_FOR_INTERRUPTS();
 
 	if (node->chgParam != NULL) /* something changed */
@@ -465,6 +467,8 @@ ExecProcNode(PlanState *node)
 			break;
 
 		case T_SortState:
+elog(LOG,"%s.T_SortState: dedup=%c", __FUNCTION__,
+								((SortState *)node)->dedup?'t':'f');
 			result = ExecSort((SortState *) node);
 			break;
 
