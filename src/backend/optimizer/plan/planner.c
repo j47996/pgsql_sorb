@@ -1721,6 +1721,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 					sort_plan = make_sort_from_pathkeys(root,
 														result_plan,
 														window_pathkeys,
+														false,
 														-1.0);
 					if (!pathkeys_contained_in(window_pathkeys,
 											   current_pathkeys))
@@ -1881,6 +1882,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 				result_plan = (Plan *) make_sort_from_pathkeys(root,
 															   result_plan,
 															current_pathkeys,
+																true,
 															   -1.0);
 			}
 
@@ -1902,6 +1904,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			result_plan = (Plan *) make_sort_from_pathkeys(root,
 														   result_plan,
 														 root->sort_pathkeys,
+														   false,
 														   limit_tuples);
 			current_pathkeys = root->sort_pathkeys;
 		}

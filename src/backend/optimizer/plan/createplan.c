@@ -2193,6 +2193,7 @@ create_mergejoin_plan(PlannerInfo *root,
 			make_sort_from_pathkeys(root,
 									outer_plan,
 									best_path->outersortkeys,
+									false,
 									-1.0);
 		outerpathkeys = best_path->outersortkeys;
 	}
@@ -2206,6 +2207,7 @@ create_mergejoin_plan(PlannerInfo *root,
 			make_sort_from_pathkeys(root,
 									inner_plan,
 									best_path->innersortkeys,
+									false,
 									-1.0);
 		innerpathkeys = best_path->innersortkeys;
 	}
@@ -4106,7 +4108,7 @@ find_ec_member_for_tle(EquivalenceClass *ec,
  */
 Sort *
 make_sort_from_pathkeys(PlannerInfo *root, Plan *lefttree, List *pathkeys,
-						double limit_tuples)
+						bool dedup, double limit_tuples)
 {
 	int			numsortkeys;
 	AttrNumber *sortColIdx;
@@ -4128,7 +4130,7 @@ make_sort_from_pathkeys(PlannerInfo *root, Plan *lefttree, List *pathkeys,
 	/* Now build the Sort node */
 	return make_sort(root, lefttree, numsortkeys,
 					 sortColIdx, sortOperators, collations,
-					 nullsFirst, false, limit_tuples);
+					 nullsFirst, dedup, limit_tuples);
 }
 
 /*
