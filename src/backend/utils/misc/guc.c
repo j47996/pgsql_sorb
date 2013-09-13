@@ -137,6 +137,8 @@ extern bool trace_syncscan;
 #ifdef DEBUG_BOUNDED_SORT
 extern bool optimize_bounded_sort;
 #endif
+extern bool optimize_dedup_sort;
+extern bool enable_intmerge_sort;
 
 static int	GUC_check_errcode_value;
 
@@ -711,6 +713,15 @@ static struct config_bool ConfigureNamesBool[] =
 			NULL
 		},
 		&enable_sort,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"enable_intmerge_sort", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enables the planner's use of the internal-merge sort method."),
+			NULL
+		},
+		&enable_intmerge_sort,
 		true,
 		NULL, NULL, NULL
 	},
@@ -1313,6 +1324,16 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 #endif
+	{
+		{
+			"optimize_dedup_sort", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Enable distinct-sorting using merge sort."),
+			NULL
+		},
+		&optimize_dedup_sort,
+		true,
+		NULL, NULL, NULL
+	},
 
 #ifdef WAL_DEBUG
 	{

@@ -238,6 +238,8 @@ bool		trace_sort = false;
 #ifdef DEBUG_BOUNDED_SORT
 bool		optimize_bounded_sort = true;
 #endif
+bool		optimize_dedup_sort = true;
+bool		enable_intmerge_sort = true;
 
 
 /*
@@ -705,6 +707,7 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 		pg_rusage_init(&state->ru_start);
 #endif
 
+	if (enable_intmerge_sort)
 	{
 		int * hp;
 		state->status = TSS_SORB;
@@ -714,6 +717,8 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 		state->maxhook= 0;
 		state->mergefreelist= -1;
 	}
+	else
+		state->status = TSS_INITIAL;
 
 	state->randomAccess = randomAccess;
 	state->dedup = false;
@@ -773,7 +778,7 @@ tuplesort_begin_heap(TupleDesc tupDesc,
 #endif
 
 	state->nKeys = nkeys;
-	state->dedup = dedup;
+	state->dedup = dedup && optimize_dedup_sort;
 
 	TRACE_POSTGRESQL_SORT_START(HEAP_SORT,
 								false,	/* no unique check */
