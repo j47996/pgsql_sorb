@@ -2538,6 +2538,7 @@ inittapes(Tuplesortstate *state)
 
 #ifdef TRACE_SORT
 	if (trace_sort)
+
 		elog(LOG, "switching to external sort with %d tapes: %s",
 			 maxTapes, pg_rusage_show(&state->ru_start));
 #endif
