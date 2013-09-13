@@ -3785,7 +3785,6 @@ make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 	node->nullsFirst = nullsFirst;
 	node->dedup = dedup;
 
-elog(LOG,"%s: ret SORT %p", __FUNCTION__, node);
 	return node;
 }
 
@@ -4128,7 +4127,6 @@ make_sort_from_pathkeys(PlannerInfo *root, Plan *lefttree, List *pathkeys,
 										  &collations,
 										  &nullsFirst);
 
-elog(LOG, "%s: dedup=%c", __FUNCTION__, dedup?'t':'f');
 	/* Now build the Sort node */
 	return make_sort(root, lefttree, numsortkeys,
 					 sortColIdx, sortOperators, collations,
@@ -4173,7 +4171,6 @@ make_sort_from_sortclauses(PlannerInfo *root, List *sortcls, Plan *lefttree, boo
 		numsortkeys++;
 	}
 
-elog(LOG, "%s: dedup=%c", __FUNCTION__, dedup?'t':'f');
 	return make_sort(root, lefttree, numsortkeys,
 					 sortColIdx, sortOperators, collations,
 					 nullsFirst, dedup, -1.0);

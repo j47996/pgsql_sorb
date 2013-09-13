@@ -43,8 +43,6 @@ ExecSort(SortState *node)
 	Tuplesortstate *tuplesortstate;
 	TupleTableSlot *slot;
 
-elog(LOG,"%s: SortState %p dedup %c TupleSortState %p", __FUNCTION__,
-	   	node, node->dedup?'t':'f', node->tuplesortstate);
 	/*
 	 * get state info from node
 	 */
@@ -91,7 +89,7 @@ elog(LOG,"%s: SortState %p dedup %c TupleSortState %p", __FUNCTION__,
 											  plannode->collations,
 											  plannode->nullsFirst,
 											  work_mem,
-											  node->dedup,
+											  ((Sort *)node->ss.ps.plan)->dedup,
 											  node->randomAccess);
 		if (node->bounded)
 			tuplesort_set_bound(tuplesortstate, node->bound);
@@ -156,7 +154,6 @@ ExecInitSort(Sort *node, EState *estate, int eflags)
 {
 	SortState  *sortstate;
 
-elog(LOG,"%s: Sort %p", __FUNCTION__, node);
 	SO1_printf("ExecInitSort: %s\n",
 			   "initializing sort node");
 
@@ -176,8 +173,8 @@ elog(LOG,"%s: Sort %p", __FUNCTION__, node);
 										 EXEC_FLAG_BACKWARD |
 										 EXEC_FLAG_MARK)) != 0;
 
-	sortstate->dedup = node->dedup;
-elog(LOG,"%s: dedup %c", __FUNCTION__, sortstate->dedup?'t':'f');
+	sortstate->dedup = node->dedup;	/*XXX this seems to get lost by the call to ExecProcNode;
+									 * hack it in ExecSort to use the Plan not the PlanState. */
 	sortstate->bounded = false;
 	sortstate->sort_Done = false;
 	sortstate->tuplesortstate = NULL;
@@ -218,8 +215,6 @@ elog(LOG,"%s: dedup %c", __FUNCTION__, sortstate->dedup?'t':'f');
 	SO1_printf("ExecInitSort: %s\n",
 			   "sort node initialized");
 
-elog(LOG,"%s: dedup %c  ret SortState %p ", __FUNCTION__,
-			   	sortstate->dedup?'t':'f', sortstate);
 	return sortstate;
 }
 
