@@ -112,10 +112,10 @@
  *   bounded-heap implementation, due to the in-progress merge sublists.
  *   It might cost more processing also; this is unclear.
  * + Handling of unique output is done during the sort; this is requested for
- *   the heap-sort case when called under a Unique node. The dedup is only
- *   done in sorb, not the tape sort; and the planner cost estimates have not
- *   been adjusted to account for the dedup.  Again, replica implementations
- *   might be considered.
+ *   the heap-sort case when called under a Unique node. The dedup is also
+ *   done in the tape sort, during the writing of each tape; however the planner
+ *   cost estimates have not been adjusted to account for it.  Again, replica
+ *   implementations might be considered.
  *
  * Random-access is limited in this module to rescan, mark- and restore-pos,
  * and reverse-access read.  We can handle all but the last easily; the
@@ -2781,6 +2781,17 @@ mergeruns(Tuplesortstate *state)
 	state->status = TSS_SORTEDONTAPE;
 }
 
+
+/*
+ * Compare two SortTuples.	If checkIndex is true, use the tuple index
+ * as the front of the sort key; otherwise, no.
+ */
+
+#define HEAPCOMPARE(tup1,tup2) \
+	(checkIndex && ((tup1)->tupindex != (tup2)->tupindex) ? \
+	 ((tup1)->tupindex) - ((tup2)->tupindex) : \
+	 COMPARETUP(state, tup1, tup2))
+
 /*
  * Merge one run from each input tape, except ones with dummy runs.
  *
@@ -2810,13 +2821,23 @@ mergeonerun(Tuplesortstate *state)
 	 */
 	while (state->memtupcount > 0)
 	{
-		/* write the tuple to destTape */
-		priorAvail = state->availMem;
-		srcTape = state->memtuples[0].tupindex;
-		WRITETUP(state, destTape, &state->memtuples[0]);
-		/* writetup adjusted total free space, now fix per-tape space */
-		spaceFreed = state->availMem - priorAvail;
-		state->mergeavailmem[srcTape] += spaceFreed;
+		bool checkIndex = true;	/* for HEAPCOMPARE */
+		if (state-> dedup && state->memtupcount > 1 &&
+			HEAPCOMPARE(&state->memtuples[0], &state->memtuples[1]) == 0)
+		{				/* A dup; drop one */
+			FREEMEM(state, GetMemoryChunkSpace(state->memtuples[0].tuple));
+			heap_free_minimal_tuple(state->memtuples[0].tuple);
+		}
+		else
+		{
+			/* write the tuple to destTape */
+			priorAvail = state->availMem;
+			srcTape = state->memtuples[0].tupindex;
+			WRITETUP(state, destTape, &state->memtuples[0]);
+			/* writetup adjusted total free space, now fix per-tape space */
+			spaceFreed = state->availMem - priorAvail;
+			state->mergeavailmem[srcTape] += spaceFreed;
+		}
 		/* compact the heap */
 		tuplesort_heap_siftup(state, false);
 		if ((tupIndex = state->mergenext[srcTape]) == 0)
@@ -3056,13 +3077,23 @@ dumptuples(Tuplesortstate *state, bool alltuples)
 		   (LACKMEM(state) && state->memtupcount > 1) ||
 		   state->memtupcount >= state->memtupsize)
 	{
+		bool checkIndex = true;	/* for HEAPCOMPARE */
 		/*
 		 * Dump the heap's frontmost entry, and sift up to remove it from the
 		 * heap.
 		 */
 		Assert(state->memtupcount > 0);
-		WRITETUP(state, state->tp_tapenum[state->destTape],
+
+		if (state-> dedup && state->memtupcount > 1 &&
+			HEAPCOMPARE(&state->memtuples[0], &state->memtuples[1]) == 0)
+		{				/* A dup; drop one */
+			FREEMEM(state, GetMemoryChunkSpace(state->memtuples[0].tuple));
+			heap_free_minimal_tuple(state->memtuples[0].tuple);
+		}
+		else
+			WRITETUP(state, state->tp_tapenum[state->destTape],
 				 &state->memtuples[0]);
+
 		tuplesort_heap_siftup(state, true);
 
 		/*
@@ -3266,15 +3297,7 @@ tuplesort_get_stats(Tuplesortstate *state,
 
 /*
  * Heap manipulation routines, per Knuth's Algorithm 5.2.3H.
- *
- * Compare two SortTuples.	If checkIndex is true, use the tuple index
- * as the front of the sort key; otherwise, no.
  */
-
-#define HEAPCOMPARE(tup1,tup2) \
-	(checkIndex && ((tup1)->tupindex != (tup2)->tupindex) ? \
-	 ((tup1)->tupindex) - ((tup2)->tupindex) : \
-	 COMPARETUP(state, tup1, tup2))
 
 /*
  * Convert the existing unordered array of SortTuples to a bounded heap,
