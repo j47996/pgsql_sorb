@@ -1723,6 +1723,7 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		if( i == j )
 		{								/* already in right place for heap */
 			this->tupindex = 0;
+			state->memtuples[next].prev= -1;	/* "next" is now head of list */
 			continue;
 		}
 		dest = &state->memtuples[j];	/* new location in heap */
@@ -1734,6 +1735,17 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		dest->tupindex = 0;				/* ... setting run number 0	*/
 
 		*this = tmp;					/* element displaced by heap */
+
+		if( next >= j )
+		{
+			if( next == j )
+			{
+				tmp.prev= -1;		/* cached "next" */
+				next = i;
+			}
+			state->memtuples[next].prev= -1;	/* "next" is now head of list */
+		}
+
 		if(tmp.prev > j)				/* ... has prev not in heap  */
 			state->memtuples[tmp.prev].next = i; /* change to new loc */
 		if(tmp.next > j)				/* ... has succ not in heap  */
