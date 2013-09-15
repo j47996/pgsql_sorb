@@ -1513,6 +1513,8 @@ sorb_link(struct Tuplesortstate * state, int new)
 	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
 	int cmp;
 
+	state->memtuples[new].prev = -1;
+
 	if ( head >= 0 )
 	{	/* not 1st ever tuple */
 
@@ -1749,7 +1751,7 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 	dest->tupindex = 0;					/* ... setting run number 0	*/
 
 	state->memtupcount = j+1;
-	Assert(state->memtupcount == ntuples);
+	Assert(state->memtupcount <= ntuples);	/* can be smaller by size of freelist */
 }
 
 /*
