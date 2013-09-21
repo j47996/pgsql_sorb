@@ -1,5 +1,5 @@
 --
--- JGH Bughunting
+-- JGH Sorb performance
 --
 
 CREATE TABLE jgh (i integer);
@@ -18,6 +18,24 @@ explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
 
 set enable_intmerge_sort to off;
 explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
+
+set work_mem to 16384;
+
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
+
+set enable_intmerge_sort to on;
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
+
+set optimize_dedup_sort to on;;
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
+
+set enable_hashagg to on;
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
+
+
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 10;
+set enable_hashagg to off;
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 10;
 
 DROP TABLE jgh;
 
