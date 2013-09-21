@@ -95,6 +95,8 @@
  * can use "Sorb".  This is an internal merge sort, with optimal merge
  * scheduling.
  * The algorithm is from Software Development International, Winter 1991.
+ * Extensions for bounded and dedup support, and implementation, by
+ * Jeremy Harris.
  *
  * Characteristics:
  * + The sort is progressive, stable and comparison-based.
@@ -107,15 +109,14 @@
  * + Only the pointers are written during the sort operation.
  * + Handling bounded-size output is done during the sort.  We could implement
  *   replicas with/without bounding if the repeated testing of the feature
- *   is a performance issue.
+ *   is a performance issue. It does not appear to be.
  * - The memory usage for bounded-size output is larger than that for the older
  *   bounded-heap implementation, due to the in-progress merge sublists.
  *   It might cost more processing also; this is unclear.
  * + Handling of unique output is done during the sort; this is requested for
  *   the heap-sort case when called under a Unique node. The dedup is also
- *   done in the tape sort, during the writing of each tape; however the planner
- *   cost estimates have not been adjusted to account for it.  Again, replica
- *   implementations might be considered.
+ *   done in the tape sort, during the writing of each tape.  Again, replica
+ *   implementations do not appear to help.
  *
  * Random-access is limited in this module to rescan, mark- and restore-pos,
  * and reverse-access read.  We can handle all but the last easily; the
@@ -145,16 +146,20 @@
  *  taken from the hook.  Merging is repeated working along the array of
  *  hooks until a free hook has been reached.  The array size is a constraint
  *  on the maximum data count; n hooks handling (worst-case) 2^(n+1)-1.  Thus
- *  31 hooks manages 4G data elements.
+ *  31 hooks manages 4G data elements.  On random input the pair of lists
+ *  being merged at each stage have roughly equal length; this gives an
+ *  optimal number of compares for the sort.
  * 3) Collector:  On input EOF the hooks array is swept from start to end
  *  merging any lists found.  The final list is now in sorted order and
  *  can be walked from start to end to output the data.
  *
  * Possible extensions:
  *
- *  As previous noted, building in a unique-ifier. (vs. state->enforceUnique
- * which checks rather than filtering). The benefit would rise with the
- * proportion of duplicates in the input, but vary with their layout.
+ *  The Unique node could be collapsed when the underlying sort supports
+ * dedup; the work it does is wasted.
+ *
+ *  The Sort node costing in the planner could be adjusted when the dedup
+ * is required and supported.
  *
  *  If the input keys have a well-distributed most-significant set of bits,
  * eg text, it is possible to front-end Sorb with one stage of big-endian
@@ -168,11 +173,12 @@
  *  The cost is more memory; still O(log n) for this component but the
  * crossover point where the O(n) becomes larger is n ~= 2000. There is a
  * certain amount of coding complexity.
- * The index-hash case might use this.
+ * The index-hash case might use this - but apparently it is not used much.
+ * Text data might use this.
  *
  *  We could implement output-progressivity for the final list merge,
  * only doing a comparison between the head elements of the penultimate
- * lists on demand from out data-sink.  This would be an advantage should
+ * lists on demand from the data-sink.  This would be an advantage should
  * only part of the output be requested (probably unlikely) or if any
  * significant overlap would result with downstream processing.  This
  * seems unlikely in the absence of batching or an MP implementation
@@ -186,6 +192,10 @@
  *  There is potential for a low-order MP Sorb implementation.  The merge
  * stages are independent apart from the ordering required to maintain a
  * stable sort.  The coding complexity would be large.
+ *
+ *  A more dynamic division of the availible memory between the concurrently
+ * running sorts would surely perform better than the current fixed values
+ * of "work_mem" limit per sort.
  *
  * ==============
  *
