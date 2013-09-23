@@ -2,6 +2,78 @@
 -- JGH Bughunting
 --
 CREATE TABLE jgh (i integer);
+INSERT INTO jgh (i) SELECT 20000 * random() FROM generate_series(1, 20000);
+explain analyze SELECT * FROM jgh ORDER BY i;
+                                                 QUERY PLAN                                                  
+-------------------------------------------------------------------------------------------------------------
+ Sort  (cost=1838.66..1892.06 rows=21360 width=4) (actual time=37.889..47.103 rows=20000 loops=1)
+   Sort Key: i
+   Sort Method: external merge  Disk: 272kB
+   ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.032..5.453 rows=20000 loops=1)
+ Total runtime: 49.014 ms
+(5 rows)
+
+set work_mem to 16384;
+explain analyze SELECT * FROM jgh ORDER BY i;
+                                                 QUERY PLAN                                                  
+-------------------------------------------------------------------------------------------------------------
+ Sort  (cost=1838.66..1892.06 rows=21360 width=4) (actual time=19.044..23.062 rows=20000 loops=1)
+   Sort Key: i
+   Sort Method: internal merge  Memory: 1862kB
+   ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.015..3.841 rows=20000 loops=1)
+ Total runtime: 25.014 ms
+(5 rows)
+
+explain analyze SELECT distinct i FROM jgh;
+                                                 QUERY PLAN                                                  
+-------------------------------------------------------------------------------------------------------------
+ HashAggregate  (cost=356.00..358.00 rows=200 width=4) (actual time=17.534..22.132 rows=12717 loops=1)
+   ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.015..4.024 rows=20000 loops=1)
+ Total runtime: 23.249 ms
+(3 rows)
+
+set enable_hashagg to off;
+explain analyze SELECT distinct i FROM jgh;
+                                                    QUERY PLAN                                                     
+-------------------------------------------------------------------------------------------------------------------
+ Unique  (cost=1838.66..1945.46 rows=200 width=4) (actual time=20.092..29.292 rows=12717 loops=1)
+   ->  Sort  (cost=1838.66..1892.06 rows=21360 width=4) (actual time=20.091..23.415 rows=12717 loops=1)
+         Sort Key: i
+         Sort Method: dedup internal merge  Memory: 1464kB
+         ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.017..3.780 rows=20000 loops=1)
+ Total runtime: 31.084 ms
+(6 rows)
+
+set optimize_dedup_sort to off;
+explain analyze SELECT distinct i FROM jgh;
+                                                    QUERY PLAN                                                     
+-------------------------------------------------------------------------------------------------------------------
+ Unique  (cost=1838.66..1945.46 rows=200 width=4) (actual time=18.291..30.459 rows=12717 loops=1)
+   ->  Sort  (cost=1838.66..1892.06 rows=21360 width=4) (actual time=18.290..23.173 rows=20000 loops=1)
+         Sort Key: i
+         Sort Method: internal merge  Memory: 1862kB
+         ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.017..3.759 rows=20000 loops=1)
+ Total runtime: 32.226 ms
+(6 rows)
+
+set enable_intmerge_sort to off;
+explain analyze SELECT distinct i FROM jgh;
+                                                    QUERY PLAN                                                     
+-------------------------------------------------------------------------------------------------------------------
+ Unique  (cost=1838.66..1945.46 rows=200 width=4) (actual time=14.564..26.286 rows=12717 loops=1)
+   ->  Sort  (cost=1838.66..1892.06 rows=21360 width=4) (actual time=14.562..18.882 rows=20000 loops=1)
+         Sort Key: i
+         Sort Method: quicksort  Memory: 1862kB
+         ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.017..3.748 rows=20000 loops=1)
+ Total runtime: 28.038 ms
+(6 rows)
+
+DROP TABLE jgh;
+set work_mem to 1024;
+set enable_hashagg to on;
+set optimize_dedup_sort to on;
+set enable_intmerge_sort to on;
+CREATE TABLE jgh (i integer);
 INSERT INTO jgh (i) SELECT * FROM generate_series(1, 10);
 INSERT INTO jgh (i) SELECT * FROM generate_series(1, 10);
 INSERT INTO jgh (i) SELECT * FROM generate_series(1, 10000);
@@ -9,48 +81,121 @@ INSERT INTO jgh (i) SELECT * FROM generate_series(1, 10000);
 explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
                                                     QUERY PLAN                                                     
 -------------------------------------------------------------------------------------------------------------------
- Sort  (cost=365.64..366.14 rows=200 width=4) (actual time=19.547..20.412 rows=10000 loops=1)
+ Sort  (cost=365.64..366.14 rows=200 width=4) (actual time=25.870..27.670 rows=10000 loops=1)
    Sort Key: i
    Sort Method: internal merge  Memory: 855kB
-   ->  HashAggregate  (cost=356.00..358.00 rows=200 width=4) (actual time=11.436..13.506 rows=10000 loops=1)
-         ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.024..3.586 rows=20020 loops=1)
- Total runtime: 21.377 ms
+   ->  HashAggregate  (cost=356.00..358.00 rows=200 width=4) (actual time=14.127..18.256 rows=10000 loops=1)
+         ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.031..4.362 rows=20020 loops=1)
+ Total runtime: 28.949 ms
 (6 rows)
 
 set enable_hashagg to off;
 explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
                                                     QUERY PLAN                                                     
 -------------------------------------------------------------------------------------------------------------------
- Unique  (cost=1838.66..1945.46 rows=200 width=4) (actual time=17.587..25.019 rows=10000 loops=1)
-   ->  Sort  (cost=1838.66..1892.06 rows=21360 width=4) (actual time=17.587..21.391 rows=16904 loops=1)
+ Unique  (cost=1838.66..1945.46 rows=200 width=4) (actual time=26.525..37.474 rows=10000 loops=1)
+   ->  Sort  (cost=1838.66..1892.06 rows=21360 width=4) (actual time=26.522..32.110 rows=14619 loops=1)
          Sort Key: i
-         Sort Method: external sort  Disk: 232kB
-         ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.011..2.524 rows=20020 loops=1)
- Total runtime: 25.799 ms
+         Sort Method: dedup external sort  Disk: 200kB
+         ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.017..3.677 rows=20020 loops=1)
+ Total runtime: 38.735 ms
 (6 rows)
 
 set optimize_dedup_sort to off;
 explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
                                                     QUERY PLAN                                                     
 -------------------------------------------------------------------------------------------------------------------
- Unique  (cost=1838.66..1945.46 rows=200 width=4) (actual time=16.518..24.333 rows=10000 loops=1)
-   ->  Sort  (cost=1838.66..1892.06 rows=21360 width=4) (actual time=16.517..20.490 rows=20020 loops=1)
+ Unique  (cost=1838.66..1945.46 rows=200 width=4) (actual time=27.519..41.160 rows=10000 loops=1)
+   ->  Sort  (cost=1838.66..1892.06 rows=21360 width=4) (actual time=27.516..34.984 rows=20020 loops=1)
          Sort Key: i
          Sort Method: external sort  Disk: 280kB
-         ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.010..2.302 rows=20020 loops=1)
- Total runtime: 25.079 ms
+         ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.019..3.850 rows=20020 loops=1)
+ Total runtime: 42.483 ms
 (6 rows)
 
 set enable_intmerge_sort to off;
 explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
                                                     QUERY PLAN                                                     
 -------------------------------------------------------------------------------------------------------------------
- Unique  (cost=1838.66..1945.46 rows=200 width=4) (actual time=16.721..24.324 rows=10000 loops=1)
-   ->  Sort  (cost=1838.66..1892.06 rows=21360 width=4) (actual time=16.720..20.535 rows=20020 loops=1)
+ Unique  (cost=1838.66..1945.46 rows=200 width=4) (actual time=29.893..43.346 rows=10000 loops=1)
+   ->  Sort  (cost=1838.66..1892.06 rows=21360 width=4) (actual time=29.891..37.239 rows=20020 loops=1)
          Sort Key: i
          Sort Method: external sort  Disk: 280kB
-         ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.015..2.250 rows=20020 loops=1)
- Total runtime: 25.042 ms
+         ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.018..3.794 rows=20020 loops=1)
+ Total runtime: 44.574 ms
 (6 rows)
+
+set work_mem to 16384;
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
+                                                    QUERY PLAN                                                     
+-------------------------------------------------------------------------------------------------------------------
+ Unique  (cost=1838.66..1945.46 rows=200 width=4) (actual time=13.571..23.355 rows=10000 loops=1)
+   ->  Sort  (cost=1838.66..1892.06 rows=21360 width=4) (actual time=13.567..17.087 rows=20020 loops=1)
+         Sort Key: i
+         Sort Method: quicksort  Memory: 1863kB
+         ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.018..3.651 rows=20020 loops=1)
+ Total runtime: 25.012 ms
+(6 rows)
+
+set enable_intmerge_sort to on;
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
+                                                    QUERY PLAN                                                     
+-------------------------------------------------------------------------------------------------------------------
+ Unique  (cost=1838.66..1945.46 rows=200 width=4) (actual time=9.960..21.814 rows=10000 loops=1)
+   ->  Sort  (cost=1838.66..1892.06 rows=21360 width=4) (actual time=9.958..13.616 rows=20020 loops=1)
+         Sort Key: i
+         Sort Method: internal merge  Memory: 1863kB
+         ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.017..3.615 rows=20020 loops=1)
+ Total runtime: 23.430 ms
+(6 rows)
+
+set optimize_dedup_sort to on;;
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
+                                                    QUERY PLAN                                                     
+-------------------------------------------------------------------------------------------------------------------
+ Unique  (cost=1838.66..1945.46 rows=200 width=4) (actual time=9.729..15.193 rows=10000 loops=1)
+   ->  Sort  (cost=1838.66..1892.06 rows=21360 width=4) (actual time=9.728..10.994 rows=10000 loops=1)
+         Sort Key: i
+         Sort Method: dedup internal merge  Memory: 1315kB
+         ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.017..3.515 rows=20020 loops=1)
+ Total runtime: 16.621 ms
+(6 rows)
+
+set enable_hashagg to on;
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
+                                                    QUERY PLAN                                                     
+-------------------------------------------------------------------------------------------------------------------
+ Sort  (cost=365.64..366.14 rows=200 width=4) (actual time=28.207..30.016 rows=10000 loops=1)
+   Sort Key: i
+   Sort Method: internal merge  Memory: 931kB
+   ->  HashAggregate  (cost=356.00..358.00 rows=200 width=4) (actual time=13.260..16.713 rows=10000 loops=1)
+         ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.017..3.547 rows=20020 loops=1)
+ Total runtime: 31.295 ms
+(6 rows)
+
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 10;
+                                                       QUERY PLAN                                                        
+-------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=362.32..362.35 rows=10 width=4) (actual time=22.576..22.578 rows=10 loops=1)
+   ->  Sort  (cost=362.32..362.82 rows=200 width=4) (actual time=22.572..22.572 rows=10 loops=1)
+         Sort Key: i
+         Sort Method: first-N internal merge  Memory: 25kB
+         ->  HashAggregate  (cost=356.00..358.00 rows=200 width=4) (actual time=14.984..18.285 rows=10000 loops=1)
+               ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.014..3.844 rows=20020 loops=1)
+ Total runtime: 22.814 ms
+(7 rows)
+
+set enable_hashagg to off;
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 10;
+                                                       QUERY PLAN                                                        
+-------------------------------------------------------------------------------------------------------------------------
+ Limit  (cost=1838.66..1844.00 rows=10 width=4) (actual time=9.586..9.595 rows=10 loops=1)
+   ->  Unique  (cost=1838.66..1945.46 rows=200 width=4) (actual time=9.585..9.593 rows=10 loops=1)
+         ->  Sort  (cost=1838.66..1892.06 rows=21360 width=4) (actual time=9.583..9.585 rows=10 loops=1)
+               Sort Key: i
+               Sort Method: dedup internal merge  Memory: 1315kB
+               ->  Seq Scan on jgh  (cost=0.00..302.60 rows=21360 width=4) (actual time=0.017..3.528 rows=20020 loops=1)
+ Total runtime: 10.276 ms
+(7 rows)
 
 DROP TABLE jgh;

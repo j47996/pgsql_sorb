@@ -1372,25 +1372,27 @@ tuplesort_putdatum(Tuplesortstate *state, Datum val, bool isNull)
 /* Sorb 2nd/3rd stage: merge a pair of lists. */
 /* If requested, fill in backlinks as we go, and note how far backlinking got.*/
 static int
-sorb_merge(struct Tuplesortstate * state, int old, int new, const bool backlink)
+sorb_merge_ssup(struct Tuplesortstate * state, int old, int new,
+			const bool backlink)
 {
+	SortTuple *memtuples = state->memtuples;
 	int start;
 	int end = -1;
 	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
 	unsigned cnt = 1;
 	int cmp;
 
-	cmp = COMPARETUP(state, &state->memtuples[old], &state->memtuples[new]);
+	cmp = cmp_ssup(&memtuples[old], &memtuples[new], state->onlyKey);
 	if( state->dedup  &&  cmp == 0 )
 	{				/* A dup; drop one */
 		int i = new;
-		new = state->memtuples[new].next;
-		free_sort_tuple(state, &state->memtuples[i]);
-		state->memtuples[i].next = state->mergefreelist;
+		new = memtuples[new].next;
+		free_sort_tuple(state, &memtuples[i]);
+		memtuples[i].next = state->mergefreelist;
 		state->mergefreelist = i;
 		if( new < 0 )
 			return old;
-		cmp = COMPARETUP(state, &state->memtuples[old], &state->memtuples[new]);
+		cmp = cmp_ssup(&memtuples[old], &memtuples[new], state->onlyKey);
 	}
 
 	if( cmp > 0 )
@@ -1403,9 +1405,9 @@ sorb_merge(struct Tuplesortstate * state, int old, int new, const bool backlink)
 old_lower:
 	do {
 		if( backlink )
-			state->memtuples[old].prev = end;
+			memtuples[old].prev = end;
 		end = old;
-		old = state->memtuples[old].next;
+		old = memtuples[old].next;
 		if( cnt++ >= bound )
 			goto bound_reached;
 		if( old == -1 )	/* Just link "new" list on the end */
@@ -1416,69 +1418,69 @@ old_lower:
 			 * but we're not doing any more comparisons so probably
 			 * not worthwhile here (unless memory is under pressure?)
 			 */
-			state->memtuples[end].next = new;
+			memtuples[end].next = new;
 			if( backlink )
 			{
-				state->memtuples[new].prev = end;
+				memtuples[new].prev = end;
 				state->list_end = new;	/* backlinking done to here */
 			}
 			return start;
 		}
 
-		cmp = COMPARETUP(state, &state->memtuples[old], &state->memtuples[new]);
+		cmp = cmp_ssup(&memtuples[old], &memtuples[new], state->onlyKey);
 		if( state->dedup  &&  cmp == 0 )
 		{
 			int i = new;
-			new = state->memtuples[new].next;
-			free_sort_tuple(state, &state->memtuples[i]);
-			state->memtuples[i].next = state->mergefreelist;
+			new = memtuples[new].next;
+			free_sort_tuple(state, &memtuples[i]);
+			memtuples[i].next = state->mergefreelist;
 			state->mergefreelist = i;
 			if( new < 0 )
 				return start;
-			cmp = COMPARETUP(state, &state->memtuples[old], &state->memtuples[new]);
+			cmp = cmp_ssup(&memtuples[old], &memtuples[new], state->onlyKey);
 		}
 	} while( cmp <= 0 );
 
-	state->memtuples[end].next = new;
+	memtuples[end].next = new;
 
 new_lower:
 	do {
 		if( backlink )
-			state->memtuples[new].prev = end;
+			memtuples[new].prev = end;
 		end = new;
-		new = state->memtuples[new].next;
+		new = memtuples[new].next;
 		if( cnt++ >= bound )
 			goto bound_reached;
 		if( new == -1 )	/* Just link the "old" list on the end */
 		{
-			state->memtuples[end].next = old;
+			memtuples[end].next = old;
 			if( backlink )
 			{
-				state->memtuples[old].prev = end;
+				memtuples[old].prev = end;
 				state->list_end = old;	/* backlinking done to here */
 			}
 			return start;
 		}
 
-		cmp = COMPARETUP(state, &state->memtuples[old], &state->memtuples[new]);
+		cmp = cmp_ssup(&memtuples[old], &memtuples[new], state->onlyKey);
 		if( state->dedup  &&  cmp == 0 )
 		{
 			int i = old;
-			old = state->memtuples[old].next;
-			free_sort_tuple(state, &state->memtuples[i]);
-			state->memtuples[i].next = state->mergefreelist;
+			old = memtuples[old].next;
+			free_sort_tuple(state, &memtuples[i]);
+			memtuples[i].next = state->mergefreelist;
 			state->mergefreelist = i;
 			if( old < 0 )
 				return start;
-			cmp = COMPARETUP(state, &state->memtuples[old], &state->memtuples[new]);
+			cmp = cmp_ssup(&memtuples[old], &memtuples[new], state->onlyKey);
 		}
 	} while( cmp > 0 );
 
-	state->memtuples[end].next = old;
+	memtuples[end].next = old;
 	goto old_lower;
 
 bound_reached:
-	state->memtuples[end].next = -1;
+	memtuples[end].next = -1;
 	if( backlink )
 		state->list_end = end;	/* backlinking done to here */
 
@@ -1489,10 +1491,10 @@ bound_reached:
 		int i;
 		for(i= old;; i= end)
 		{
-			free_sort_tuple(state, &state->memtuples[i]);
-			if( (end= state->memtuples[i].next) < 0 ) break;
+			free_sort_tuple(state, &memtuples[i]);
+			if( (end= memtuples[i].next) < 0 ) break;
 		}
-		state->memtuples[i].next= state->mergefreelist;
+		memtuples[i].next= state->mergefreelist;
 		state->mergefreelist= old;
 	}
 	if( new >= 0 )
@@ -1500,10 +1502,148 @@ bound_reached:
 		int i;
 		for(i= new;; i= end)
 		{
-			free_sort_tuple(state, &state->memtuples[i]);
-			if( (end= state->memtuples[i].next) < 0 ) break;
+			free_sort_tuple(state, &memtuples[i]);
+			if( (end= memtuples[i].next) < 0 ) break;
 		}
-		state->memtuples[i].next= state->mergefreelist;
+		memtuples[i].next= state->mergefreelist;
+		state->mergefreelist= new;
+	}
+	return start;
+}
+static int
+sorb_merge(struct Tuplesortstate * state, int old, int new, const bool backlink)
+{
+	SortTuple *memtuples = state->memtuples;
+	int start;
+	int end = -1;
+	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
+	unsigned cnt = 1;
+	int cmp;
+
+	cmp = COMPARETUP(state, &memtuples[old], &memtuples[new]);
+	if( state->dedup  &&  cmp == 0 )
+	{				/* A dup; drop one */
+		int i = new;
+		new = memtuples[new].next;
+		free_sort_tuple(state, &memtuples[i]);
+		memtuples[i].next = state->mergefreelist;
+		state->mergefreelist = i;
+		if( new < 0 )
+			return old;
+		cmp = COMPARETUP(state, &memtuples[old], &memtuples[new]);
+	}
+
+	if( cmp > 0 )
+	{
+		start = new;
+		goto new_lower;
+	}
+	start = old;
+
+old_lower:
+	do {
+		if( backlink )
+			memtuples[old].prev = end;
+		end = old;
+		old = memtuples[old].next;
+		if( cnt++ >= bound )
+			goto bound_reached;
+		if( old == -1 )	/* Just link "new" list on the end */
+		{
+			/*
+			 * If bounded but not yet there, we could walk the "new"
+			 * list counting, and trim once it went over the bound -
+			 * but we're not doing any more comparisons so probably
+			 * not worthwhile here (unless memory is under pressure?)
+			 */
+			memtuples[end].next = new;
+			if( backlink )
+			{
+				memtuples[new].prev = end;
+				state->list_end = new;	/* backlinking done to here */
+			}
+			return start;
+		}
+
+		cmp = COMPARETUP(state, &memtuples[old], &memtuples[new]);
+		if( state->dedup  &&  cmp == 0 )
+		{
+			int i = new;
+			new = memtuples[new].next;
+			free_sort_tuple(state, &memtuples[i]);
+			memtuples[i].next = state->mergefreelist;
+			state->mergefreelist = i;
+			if( new < 0 )
+				return start;
+			cmp = COMPARETUP(state, &memtuples[old], &memtuples[new]);
+		}
+	} while( cmp <= 0 );
+
+	memtuples[end].next = new;
+
+new_lower:
+	do {
+		if( backlink )
+			memtuples[new].prev = end;
+		end = new;
+		new = memtuples[new].next;
+		if( cnt++ >= bound )
+			goto bound_reached;
+		if( new == -1 )	/* Just link the "old" list on the end */
+		{
+			memtuples[end].next = old;
+			if( backlink )
+			{
+				memtuples[old].prev = end;
+				state->list_end = old;	/* backlinking done to here */
+			}
+			return start;
+		}
+
+		cmp = COMPARETUP(state, &memtuples[old], &memtuples[new]);
+		if( state->dedup  &&  cmp == 0 )
+		{
+			int i = old;
+			old = memtuples[old].next;
+			free_sort_tuple(state, &memtuples[i]);
+			memtuples[i].next = state->mergefreelist;
+			state->mergefreelist = i;
+			if( old < 0 )
+				return start;
+			cmp = COMPARETUP(state, &memtuples[old], &memtuples[new]);
+		}
+	} while( cmp > 0 );
+
+	memtuples[end].next = old;
+	goto old_lower;
+
+bound_reached:
+	memtuples[end].next = -1;
+	if( backlink )
+		state->list_end = end;	/* backlinking done to here */
+
+	/* We can free up the tuple memory, but not the SortTuple structs. */
+	/* Put the structs on a freelist for re-use by new tuples.         */
+	if( old >= 0 )
+	{
+		int i;
+		for(i= old;; i= end)
+		{
+			free_sort_tuple(state, &memtuples[i]);
+			if( (end= memtuples[i].next) < 0 ) break;
+		}
+		memtuples[i].next= state->mergefreelist;
+		state->mergefreelist= old;
+	}
+	if( new >= 0 )
+	{
+		int i;
+		for(i= new;; i= end)
+		{
+			free_sort_tuple(state, &memtuples[i]);
+			if( (end= memtuples[i].next) < 0 ) break;
+		}
+		memtuples[i].next= state->mergefreelist;
 		state->mergefreelist= new;
 	}
 	return start;
@@ -1515,21 +1655,22 @@ bound_reached:
  * Otherwise merge the completed run (sorb 2nd stage) and start a new run.
  */
 static inline void
-sorb_link(struct Tuplesortstate * state, int new)
+sorb_link_ssup(struct Tuplesortstate * state, int new)
 {
+	SortTuple *memtuples = state->memtuples;
 	int head = state->runhooks[0];
 	int end;
 	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
 	int cmp;
 
-	state->memtuples[new].prev = -1;
+	memtuples[new].prev = -1;
 
 	if ( head >= 0 )
 	{	/* not 1st ever tuple */
 
-		if( state->memtuples[head].next == -1 )
+		if( memtuples[head].next == -1 )
 		{	/* 2nd in run; establishes run direction */
-			cmp = COMPARETUP(state, &state->memtuples[head], &state->memtuples[new]);
+			cmp = cmp_ssup(&memtuples[head], &memtuples[new], state->onlyKey);
 			if( state->dedup  &&  cmp == 0 )
 				goto drop;					/* A duplicate; drop the new one */
 			else if( (cmp <= 0) )
@@ -1539,26 +1680,26 @@ sorb_link(struct Tuplesortstate * state, int new)
 					goto drop;				/* run already longer than required; drop the new one */
 				else
 				{
-					state->memtuples[new].next = -1;
-					state->memtuples[head].next = state->list_end = new;
+					memtuples[new].next = -1;
+					memtuples[head].next = state->list_end = new;
 				}
 			}
 			else /* Descending-order run */
 			{
 				if( 1 == state->bound )
 				{	/* run already longer than required; drop the head one */
-					free_sort_tuple(state, &state->memtuples[head]);
-					state->memtuples[head].tuple = state->memtuples[new].tuple;
-					state->memtuples[head].datum1 = state->memtuples[new].datum1;
-					state->memtuples[head].isnull1 = state->memtuples[new].isnull1;
+					free_sort_tuple(state, &memtuples[head]);
+					memtuples[head].tuple = memtuples[new].tuple;
+					memtuples[head].datum1 = memtuples[new].datum1;
+					memtuples[head].isnull1 = memtuples[new].isnull1;
 					state->memtupcount = new;
 				}
 				else
 				{
 					state->runlen = -1;
-					state->memtuples[new].next = head;
+					memtuples[new].next = head;
 					state->runhooks[0] = new;
-					state->memtuples[head].prev = new;
+					memtuples[head].prev = new;
 				}
 			}
 			return;	/* 2-element list is on hook 0 */
@@ -1568,7 +1709,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 		if( state->runlen > 0 )
 		{	/* Non-descending order run */
 			end = state->list_end;
-			cmp = COMPARETUP(state, &state->memtuples[end], &state->memtuples[new]);
+			cmp = cmp_ssup(&memtuples[end], &memtuples[new], state->onlyKey);
 			if( state->dedup  &&  cmp == 0 )
 				goto drop;					/* A duplicate; drop the new one */
 			else if( (cmp <= 0) )
@@ -1578,15 +1719,15 @@ sorb_link(struct Tuplesortstate * state, int new)
 				else
 				{
 					++state->runlen;
-					state->memtuples[new].next = -1;
-					state->memtuples[end].next = state->list_end = new;
+					memtuples[new].next = -1;
+					memtuples[end].next = state->list_end = new;
 				}
 				return;	/* >=2 element list, on hook 0 */
 			}
 		}
 		else
 		{	/* Descending-order run */
-			cmp = COMPARETUP(state, &state->memtuples[head], &state->memtuples[new]);
+			cmp = cmp_ssup(&memtuples[head], &memtuples[new], state->onlyKey);
 			if( state->dedup  &&  cmp == 0 )
 				goto drop;					/* A duplicate; drop the new one */
 			else if( (cmp > 0) )
@@ -1594,18 +1735,154 @@ sorb_link(struct Tuplesortstate * state, int new)
 				if( -state->runlen >= bound )
 				{	/* run now longer than required; drop the largest one */
 					end = state->list_end;
-					free_sort_tuple(state, &state->memtuples[end]);
-					state->memtuples[end].next = state->mergefreelist;
+					free_sort_tuple(state, &memtuples[end]);
+					memtuples[end].next = state->mergefreelist;
 					state->mergefreelist = end;
-					state->list_end = end = state->memtuples[end].prev;
-					state->memtuples[end].next = -1;
+					state->list_end = end = memtuples[end].prev;
+					memtuples[end].next = -1;
 				}
 				else
 					--state->runlen;
 
-				state->memtuples[new].next = head;
+				memtuples[new].next = head;
 				state->runhooks[0] = new;
-				state->memtuples[head].prev = new;
+				memtuples[head].prev = new;
+				return;	/* >=2 element list, on hook 0 */
+			}
+		}
+
+		/*
+		 * The new tuple breaks the current run.
+		 * Merge the run to free hook zero, then place the tuple
+		 * as first in a new run onto it.
+		 */
+		{
+			int hook;
+			int start = state->runhooks[0];
+			for ( hook = 1;
+				  state->runhooks[hook] >= 0  &&  hook <= state->maxhook + 1;
+				  hook++ )
+			{
+				start = sorb_merge_ssup(state,
+										state->runhooks[hook], start, false);
+				state->runhooks[hook] = -1;
+			}
+			/* all hooks up to "hook" now free; use top one for exp schedule */
+			/* or lower to save memory for bounded case */
+			if( hook > state->maxhook )
+			{
+				if ( state->bounded  &&  1<<hook > state->bound - state->bound/4 )
+					--hook;
+				else
+					state->maxhook = hook;
+			}
+			state->runhooks[hook] = start;
+		}
+	}
+
+	memtuples[new].next = -1;
+	state->runhooks[0] = state->list_end = new;
+	return;	/* 1-element list, on hook 0 */
+
+drop:
+	/* A duplicate; drop the new one */
+	free_sort_tuple(state, &memtuples[new]);
+	state->memtupcount = new;
+	return;
+}
+static inline void
+sorb_link(struct Tuplesortstate * state, int new)
+{
+	SortTuple *memtuples = state->memtuples;
+	int head = state->runhooks[0];
+	int end;
+	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
+	int cmp;
+
+	memtuples[new].prev = -1;
+
+	if ( head >= 0 )
+	{	/* not 1st ever tuple */
+
+		if( memtuples[head].next == -1 )
+		{	/* 2nd in run; establishes run direction */
+			cmp = COMPARETUP(state, &memtuples[head], &memtuples[new]);
+			if( state->dedup  &&  cmp == 0 )
+				goto drop;					/* A duplicate; drop the new one */
+			else if( (cmp <= 0) )
+			{	/* Non-descending order run */
+				state->runlen = 1;
+				if( 1 == bound )
+					goto drop;				/* run already longer than required; drop the new one */
+				else
+				{
+					memtuples[new].next = -1;
+					memtuples[head].next = state->list_end = new;
+				}
+			}
+			else /* Descending-order run */
+			{
+				if( 1 == state->bound )
+				{	/* run already longer than required; drop the head one */
+					free_sort_tuple(state, &memtuples[head]);
+					memtuples[head].tuple = memtuples[new].tuple;
+					memtuples[head].datum1 = memtuples[new].datum1;
+					memtuples[head].isnull1 = memtuples[new].isnull1;
+					state->memtupcount = new;
+				}
+				else
+				{
+					state->runlen = -1;
+					memtuples[new].next = head;
+					state->runhooks[0] = new;
+					memtuples[head].prev = new;
+				}
+			}
+			return;	/* 2-element list is on hook 0 */
+		}
+
+		/* run direction established */
+		if( state->runlen > 0 )
+		{	/* Non-descending order run */
+			end = state->list_end;
+			cmp = COMPARETUP(state, &memtuples[end], &memtuples[new]);
+			if( state->dedup  &&  cmp == 0 )
+				goto drop;					/* A duplicate; drop the new one */
+			else if( (cmp <= 0) )
+			{	/* new tuple extends run */
+				if( state->runlen >= bound )
+					goto drop;				/* run now longer than required; drop the new one */
+				else
+				{
+					++state->runlen;
+					memtuples[new].next = -1;
+					memtuples[end].next = state->list_end = new;
+				}
+				return;	/* >=2 element list, on hook 0 */
+			}
+		}
+		else
+		{	/* Descending-order run */
+			cmp = COMPARETUP(state, &memtuples[head], &memtuples[new]);
+			if( state->dedup  &&  cmp == 0 )
+				goto drop;					/* A duplicate; drop the new one */
+			else if( (cmp > 0) )
+			{	/* new tuple extends run */
+				if( -state->runlen >= bound )
+				{	/* run now longer than required; drop the largest one */
+					end = state->list_end;
+					free_sort_tuple(state, &memtuples[end]);
+					memtuples[end].next = state->mergefreelist;
+					state->mergefreelist = end;
+					state->list_end = end = memtuples[end].prev;
+					memtuples[end].next = -1;
+				}
+				else
+					--state->runlen;
+
+				memtuples[new].next = head;
+				state->runhooks[0] = new;
+				memtuples[head].prev = new;
 				return;	/* >=2 element list, on hook 0 */
 			}
 		}
@@ -1638,13 +1915,13 @@ sorb_link(struct Tuplesortstate * state, int new)
 		}
 	}
 
-	state->memtuples[new].next = -1;
+	memtuples[new].next = -1;
 	state->runhooks[0] = state->list_end = new;
 	return;	/* 1-element list, on hook 0 */
 
 drop:
 	/* A duplicate; drop the new one */
-	free_sort_tuple(state, &state->memtuples[new]);
+	free_sort_tuple(state, &memtuples[new]);
 	state->memtupcount = new;
 	return;
 }
@@ -1652,6 +1929,27 @@ drop:
 /* Third-stage of sorb: merge intermediate runs to final list. */
 /* If asked, build a backlink chain during the active merge portion */
 /* of the final merge.												*/
+static int
+sorb_collector_ssup(struct Tuplesortstate * state, bool backlink)
+{
+	int hook = 0;
+	int start;
+
+	state->list_end = -1;
+	state->reverse_linkage = false;
+	if( state->memtupcount == 0 )
+		return -1;
+
+	while( state->runhooks[hook] == -1 )
+		hook++;
+	start = state->runhooks[hook];
+	while( ++hook < state->maxhook )
+		if( state->runhooks[hook] >= 0 )
+			start = sorb_merge_ssup(state, state->runhooks[hook], start, false);
+	if( state->runhooks[hook] >= 0 )
+		start = sorb_merge_ssup(state, state->runhooks[hook], start, backlink);
+	return start;
+}
 static int
 sorb_collector(struct Tuplesortstate * state, bool backlink)
 {
@@ -1706,6 +2004,7 @@ sorb_reverse_chain(struct Tuplesortstate * state, int start)
 static inline void
 heapify_sorted_list(struct Tuplesortstate * state, int start)
 {
+	SortTuple * memtuples = state->memtuples;;
 	int j;		/* pos in heap array */
 	int i;		/* element in sorted-list */
 	SortTuple * this;	/* ditto */
@@ -1717,25 +2016,26 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		return;					/* no work to do */
 
 	/* Build backlink chain, accounting for work already done in sorb_merge */
-	state->memtuples[start].prev = -1;
+	memtuples[start].prev = -1;
 	sorb_reverse_chain(state, start);
 
 	/* Walk list, copying to an in-order array */
-	for( i= start, j= 0, next = state->memtuples[i].next;
+	for( i= start, j= 0, next = memtuples[i].next;
 		 next >= 0;
-		 i= next, next= state->memtuples[next].next, j++)
+		 i= next, next= memtuples[next].next, j++)
 	{
 		SortTuple	tmp;
 
+if(i<j) elog(WARNING, "%s: listitem %d, heapitem %d", i, j);
 		Assert(i >= j);					/* item should not yet be in heap */
-		this = &state->memtuples[i];	/* old location in list */
+		this = &memtuples[i];			/* old location in list */
 		if( i == j )
 		{								/* already in right place for heap */
 			this->tupindex = 0;
-			state->memtuples[next].prev= -1;	/* "next" is now head of list */
+			memtuples[next].prev= -1;	/* "next" is now head of list */
 			continue;
 		}
-		dest = &state->memtuples[j];	/* new location in heap */
+		dest = &memtuples[j];			/* new location in heap */
 		tmp = *dest;					/* make space for new heap element */
 
 		dest->tuple = this->tuple;		/* move element to heap...	*/
@@ -1752,19 +2052,19 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 				tmp.prev= -1;		/* cached "next" */
 				next = i;
 			}
-			state->memtuples[next].prev= -1;	/* "next" is now head of list */
+			memtuples[next].prev= -1;	/* "next" is now head of list */
 		}
 
 		if(tmp.prev > j)				/* ... has prev not in heap  */
-			state->memtuples[tmp.prev].next = i; /* change to new loc */
+			memtuples[tmp.prev].next = i; /* change to new loc */
 		if(tmp.next > j)				/* ... has succ not in heap  */
-			state->memtuples[tmp.next].prev = i; /* change to new loc */
+			memtuples[tmp.next].prev = i; /* change to new loc */
 	}
 
-	dest = &state->memtuples[j];		/* new location in heap */
+	dest = &memtuples[j];		/* new location in heap */
 	if( i != j )
 	{
-		this = &state->memtuples[i];	/* old location in list */
+		this = &memtuples[i];			/* old location in list */
 		dest->tuple = this->tuple;		/* move element to heap...	*/
 		dest->datum1 = this->datum1;	/*							*/
 		dest->isnull1 = this->isnull1;	/*							*/
@@ -1877,7 +2177,11 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			}
 
 			/* 1st & 2nd sorb stages */
-			sorb_link(state, item);
+			/* Can we use the single-key sort function? */
+			if (state->onlyKey != NULL)
+				sorb_link_ssup(state, item);
+			else
+				sorb_link(state, item);
 
 			/*
 			 * Done if we still fit in available memory and have array slots,
@@ -1893,7 +2197,10 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			 * Nope; time to switch to tape-based operation.
 			 * 3rd (final) sorb stage: merge all intermediate lists to one.
 			 */
-			state->list_start = sorb_collector(state, true);
+			/* Can we use the single-key sort function? */
+			state->list_start = state->onlyKey != NULL
+				? sorb_collector_ssup(state, true)
+				: sorb_collector(state, true);
 
 			/*
 			 * Set up for tape-based operation.
@@ -2058,9 +2365,12 @@ tuplesort_performsort(Tuplesortstate *state)
 	{
 		case TSS_SORB:
 			/* 3rd (final) sorb stage: merge all intermediate lists to one */
+			/* Can we use the single-key sort function? */
 			state->current =
 			state->markpos_offset =
-			state->list_start = sorb_collector(state, state->randomAccess);
+			state->list_start = state->onlyKey != NULL
+				? sorb_collector_ssup(state, state->randomAccess)
+				: sorb_collector(state, state->randomAccess);
 
 			state->eof_reached = false;
 			state->markpos_eof = false;

@@ -5,10 +5,16 @@
 CREATE TABLE jgh (i integer);
 INSERT INTO jgh (i) SELECT 20000 * random() FROM generate_series(1, 20000);
 
+-- external sort
 explain analyze SELECT * FROM jgh ORDER BY i;
-
 set work_mem to 16384;
+-- internal merge
 explain analyze SELECT * FROM jgh ORDER BY i;
+set enable_intmerge_sort to off;
+-- internal quicksort
+explain analyze SELECT * FROM jgh ORDER BY i;
+set enable_intmerge_sort to on;
+
 
 explain analyze SELECT distinct i FROM jgh;
 set enable_hashagg to off;
