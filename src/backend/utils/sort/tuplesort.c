@@ -1544,7 +1544,8 @@ sorb_link(struct Tuplesortstate * state, int new)
 					state->memtuples[head].tuple = state->memtuples[new].tuple;
 					state->memtuples[head].datum1 = state->memtuples[new].datum1;
 					state->memtuples[head].isnull1 = state->memtuples[new].isnull1;
-					state->memtupcount = new;
+					state->memtuples[new].next = state->mergefreelist;
+					state->mergefreelist = new;
 				}
 				else
 				{
@@ -1638,7 +1639,8 @@ sorb_link(struct Tuplesortstate * state, int new)
 drop:
 	/* A duplicate; drop the new one */
 	free_sort_tuple(state, &state->memtuples[new]);
-	state->memtupcount = new;
+	state->memtuples[new].next = state->mergefreelist;
+	state->mergefreelist = new;
 	return;
 }
 
