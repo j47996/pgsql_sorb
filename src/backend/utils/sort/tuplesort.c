@@ -1985,6 +1985,16 @@ sorb_reverse_chain(struct Tuplesortstate * state, int start)
 }
 
 /*
+ * Compare two SortTuples.	If checkIndex is true, use the tuple index
+ * as the front of the sort key; otherwise, no.
+ */
+
+#define HEAPCOMPARE(tup1,tup2) \
+	(checkIndex && ((tup1)->tupindex != (tup2)->tupindex) ? \
+	 ((tup1)->tupindex) - ((tup2)->tupindex) : \
+	 COMPARETUP(state, tup1, tup2))
+
+/*
  * Convert the sorted-list output of a sorb run, sparsely resident in
  * memtuples[], in-place into a heap.  Each tuple is marked as belonging
  * to run number zero.
@@ -1997,7 +2007,7 @@ sorb_reverse_chain(struct Tuplesortstate * state, int start)
 static inline void
 heapify_sorted_list(struct Tuplesortstate * state, int start)
 {
-	SortTuple * memtuples = state->memtuples;;
+	SortTuple * memtuples = state->memtuples;
 	int j;		/* pos in heap array */
 	int i;		/* element in sorted-list */
 	SortTuple * this;	/* ditto */
@@ -2019,7 +2029,6 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 	{
 		SortTuple	tmp;
 
-if(i<j) elog(WARNING, "%s: listitem %d, heapitem %d", i, j);
 		Assert(i >= j);					/* item should not yet be in heap */
 		this = &memtuples[i];			/* old location in list */
 		if( i == j )
@@ -3092,16 +3101,6 @@ mergeruns(Tuplesortstate *state)
 	state->status = TSS_SORTEDONTAPE;
 }
 
-
-/*
- * Compare two SortTuples.	If checkIndex is true, use the tuple index
- * as the front of the sort key; otherwise, no.
- */
-
-#define HEAPCOMPARE(tup1,tup2) \
-	(checkIndex && ((tup1)->tupindex != (tup2)->tupindex) ? \
-	 ((tup1)->tupindex) - ((tup2)->tupindex) : \
-	 COMPARETUP(state, tup1, tup2))
 
 /*
  * Merge one run from each input tape, except ones with dummy runs.
