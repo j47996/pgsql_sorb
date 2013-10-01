@@ -548,7 +548,7 @@ struct Tuplesortstate
 #endif
 };
 
-#define COMPARETUP(state,a,b)	(*(state)->comparetup) (a, b, state)
+#define COMPARETUP(state,a,b)	((state)->cmpcnt++, (*(state)->comparetup) (a, b, state))
 #define COPYTUP(state,stup,tup) ((*(state)->copytup) (state, stup, tup))
 #define WRITETUP(state,tape,stup)	((*(state)->writetup) (state, tape, stup))
 #define READTUP(state,stup,tape,len) ((*(state)->readtup) (state, stup, tape, len))
@@ -714,6 +714,7 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 	state = (Tuplesortstate *) palloc0(sizeof(Tuplesortstate));
 
 #ifdef TRACE_SORT
+	trace_sort = true;
 	if (trace_sort)
 		pg_rusage_init(&state->ru_start);
 #endif
@@ -1103,11 +1104,11 @@ tuplesort_end(Tuplesortstate *state)
 	if (trace_sort)
 	{
 		if (state->tapeset)
-			elog(LOG, "external sort ended, %u cmps, %ld disk blocks used: %s",
+			elog(NOTICE, "external sort ended, %u cmps, %ld disk blocks used: %s",
 				 state->cmpcnt,
 				 spaceUsed, pg_rusage_show(&state->ru_start));
 		else
-			elog(LOG, "internal sort ended, %u cmps, %ld KB used: %s",
+			elog(NOTICE, "internal sort ended, %u cmps, %ld KB used: %s",
 				 state->cmpcnt,
 				 spaceUsed, pg_rusage_show(&state->ru_start));
 	}
@@ -1382,7 +1383,7 @@ sorb_merge_ssup(struct Tuplesortstate * state, int old, int new,
 	unsigned cnt = 1;
 	int cmp;
 
-	cmp = cmp_ssup(&memtuples[old], &memtuples[new], state->onlyKey);
+	cmp = cmp_ssup(state, &memtuples[old], &memtuples[new], state->onlyKey);
 	if( state->dedup  &&  cmp == 0 )
 	{				/* A dup; drop one */
 		int i = new;
@@ -1392,7 +1393,7 @@ sorb_merge_ssup(struct Tuplesortstate * state, int old, int new,
 		state->mergefreelist = i;
 		if( new < 0 )
 			return old;
-		cmp = cmp_ssup(&memtuples[old], &memtuples[new], state->onlyKey);
+		cmp = cmp_ssup(state, &memtuples[old], &memtuples[new], state->onlyKey);
 	}
 
 	if( cmp > 0 )
@@ -1427,7 +1428,7 @@ old_lower:
 			return start;
 		}
 
-		cmp = cmp_ssup(&memtuples[old], &memtuples[new], state->onlyKey);
+		cmp = cmp_ssup(state, &memtuples[old], &memtuples[new], state->onlyKey);
 		if( state->dedup  &&  cmp == 0 )
 		{
 			int i = new;
@@ -1437,7 +1438,7 @@ old_lower:
 			state->mergefreelist = i;
 			if( new < 0 )
 				return start;
-			cmp = cmp_ssup(&memtuples[old], &memtuples[new], state->onlyKey);
+			cmp = cmp_ssup(state, &memtuples[old], &memtuples[new], state->onlyKey);
 		}
 	} while( cmp <= 0 );
 
@@ -1462,7 +1463,7 @@ new_lower:
 			return start;
 		}
 
-		cmp = cmp_ssup(&memtuples[old], &memtuples[new], state->onlyKey);
+		cmp = cmp_ssup(state, &memtuples[old], &memtuples[new], state->onlyKey);
 		if( state->dedup  &&  cmp == 0 )
 		{
 			int i = old;
@@ -1472,7 +1473,7 @@ new_lower:
 			state->mergefreelist = i;
 			if( old < 0 )
 				return start;
-			cmp = cmp_ssup(&memtuples[old], &memtuples[new], state->onlyKey);
+			cmp = cmp_ssup(state, &memtuples[old], &memtuples[new], state->onlyKey);
 		}
 	} while( cmp > 0 );
 
@@ -1670,7 +1671,7 @@ sorb_link_ssup(struct Tuplesortstate * state, int new)
 
 		if( memtuples[head].next == -1 )
 		{	/* 2nd in run; establishes run direction */
-			cmp = cmp_ssup(&memtuples[head], &memtuples[new], state->onlyKey);
+			cmp = cmp_ssup(state, &memtuples[head], &memtuples[new], state->onlyKey);
 			if( state->dedup  &&  cmp == 0 )
 				goto drop;					/* A duplicate; drop the new one */
 			else if( (cmp <= 0) )
@@ -1710,7 +1711,7 @@ sorb_link_ssup(struct Tuplesortstate * state, int new)
 		if( state->runlen > 0 )
 		{	/* Non-descending order run */
 			end = state->list_end;
-			cmp = cmp_ssup(&memtuples[end], &memtuples[new], state->onlyKey);
+			cmp = cmp_ssup(state, &memtuples[end], &memtuples[new], state->onlyKey);
 			if( state->dedup  &&  cmp == 0 )
 				goto drop;					/* A duplicate; drop the new one */
 			else if( (cmp <= 0) )
@@ -1728,7 +1729,7 @@ sorb_link_ssup(struct Tuplesortstate * state, int new)
 		}
 		else
 		{	/* Descending-order run */
-			cmp = cmp_ssup(&memtuples[head], &memtuples[new], state->onlyKey);
+			cmp = cmp_ssup(state, &memtuples[head], &memtuples[new], state->onlyKey);
 			if( state->dedup  &&  cmp == 0 )
 				goto drop;					/* A duplicate; drop the new one */
 			else if( (cmp > 0) )
@@ -1830,7 +1831,8 @@ sorb_link(struct Tuplesortstate * state, int new)
 					memtuples[head].tuple = memtuples[new].tuple;
 					memtuples[head].datum1 = memtuples[new].datum1;
 					memtuples[head].isnull1 = memtuples[new].isnull1;
-					state->memtupcount = new;
+					memtuples[new].next = state->mergefreelist;
+					state->mergefreelist = new;
 				}
 				else
 				{
@@ -1924,7 +1926,8 @@ sorb_link(struct Tuplesortstate * state, int new)
 drop:
 	/* A duplicate; drop the new one */
 	free_sort_tuple(state, &memtuples[new]);
-	state->memtupcount = new;
+	memtuples[new].next = state->mergefreelist;
+	state->mergefreelist = new;
 	return;
 }
 
@@ -2398,7 +2401,7 @@ tuplesort_performsort(Tuplesortstate *state)
 			{
 				/* Can we use the single-key sort function? */
 				if (state->onlyKey != NULL)
-					qsort_ssup(state->memtuples, state->memtupcount,
+					qsort_ssup(state, state->memtuples, state->memtupcount,
 							   state->onlyKey);
 				else
 					qsort_tuple(state->memtuples,
