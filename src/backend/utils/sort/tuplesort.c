@@ -1377,23 +1377,29 @@ sorb_merge_ssup(struct Tuplesortstate * state, int old, int new,
 			const bool backlink)
 {
 	SortTuple *memtuples = state->memtuples;
+	SortTuple *op = &memtuples[old];
+	SortTuple *np = &memtuples[new];
 	int start;
 	int end = -1;
 	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
 	unsigned cnt = 1;
 	int cmp;
+	SortSupport onlyKey = state->onlyKey;
 
-	cmp = cmp_ssup(state, &memtuples[old], &memtuples[new], state->onlyKey);
+	CHECK_FOR_INTERRUPTS();
+	cmp = cmp_ssup(state, op, np, onlyKey);
 	if( state->dedup  &&  cmp == 0 )
 	{				/* A dup; drop one */
 		int i = new;
-		new = memtuples[new].next;
-		free_sort_tuple(state, &memtuples[i]);
-		memtuples[i].next = state->mergefreelist;
+		new = np->next;
+		free_sort_tuple(state, np);
+		np->next = state->mergefreelist;
 		state->mergefreelist = i;
 		if( new < 0 )
 			return old;
-		cmp = cmp_ssup(state, &memtuples[old], &memtuples[new], state->onlyKey);
+		np= &memtuples[new];
+		CHECK_FOR_INTERRUPTS();
+		cmp = cmp_ssup(state, op, np, onlyKey);
 	}
 
 	if( cmp > 0 )
@@ -1406,13 +1412,37 @@ sorb_merge_ssup(struct Tuplesortstate * state, int old, int new,
 old_lower:
 	do {
 		if( backlink )
-			memtuples[old].prev = end;
+			op->prev = end;
 		end = old;
-		old = memtuples[old].next;
+		old = op->next;
 		if( cnt++ >= bound )
 			goto bound_reached;
+
+
 		if( old == -1 )	/* Just link "new" list on the end */
 		{
+			/*
+			 * Now here's an interesting question.  It seems obvious 
+			 * to just link the tail of the unexhausted list after the
+			 * merged list, to gain a max-length resulting merge with
+			 * no effort.  But do we actually lose out in the long
+			 * run?
+			 * The posit of the Sorb developer was that best performance
+			 * was obtained by merging lists of equal length - hence the
+			 * development of the exponential merge schedule.  Does this
+			 * imply that *not* doing compare work on the tail is a
+			 * is a performance loss?  I do not see how to analyse this.
+			 *
+			 * We could implement some scheme for returning the tail
+			 * separately from the merge-result, and optimally place it
+			 * on a hook.  But what if it's longer than the merge? Is
+			 * that an issue?  Mind, it should not happen given the
+			 * (stability-losing) optimal hook placement of initially
+			 * linked runs. More likely to happen is that the merge is
+			 * not long enough to be optimally placed on the next hook.
+			 * Also, this scheme will probably destroy stability itself.
+			 */
+
 			/*
 			 * If bounded but not yet there, we could walk the "new"
 			 * list counting, and trim once it went over the bound -
@@ -1422,23 +1452,27 @@ old_lower:
 			memtuples[end].next = new;
 			if( backlink )
 			{
-				memtuples[new].prev = end;
+				np->prev = end;
 				state->list_end = new;	/* backlinking done to here */
 			}
 			return start;
 		}
+		op = &memtuples[old];
 
-		cmp = cmp_ssup(state, &memtuples[old], &memtuples[new], state->onlyKey);
+		CHECK_FOR_INTERRUPTS();
+		cmp = cmp_ssup(state, op, np, onlyKey);
 		if( state->dedup  &&  cmp == 0 )
 		{
 			int i = new;
-			new = memtuples[new].next;
+			new = np->next;
 			free_sort_tuple(state, &memtuples[i]);
-			memtuples[i].next = state->mergefreelist;
+			np->next = state->mergefreelist;
 			state->mergefreelist = i;
 			if( new < 0 )
 				return start;
-			cmp = cmp_ssup(state, &memtuples[old], &memtuples[new], state->onlyKey);
+			np = &memtuples[new];
+			CHECK_FOR_INTERRUPTS();
+			cmp = cmp_ssup(state, op, np, onlyKey);
 		}
 	} while( cmp <= 0 );
 
@@ -1447,9 +1481,9 @@ old_lower:
 new_lower:
 	do {
 		if( backlink )
-			memtuples[new].prev = end;
+			np->prev = end;
 		end = new;
-		new = memtuples[new].next;
+		new = np->next;
 		if( cnt++ >= bound )
 			goto bound_reached;
 		if( new == -1 )	/* Just link the "old" list on the end */
@@ -1457,23 +1491,27 @@ new_lower:
 			memtuples[end].next = old;
 			if( backlink )
 			{
-				memtuples[old].prev = end;
+				op->prev = end;
 				state->list_end = old;	/* backlinking done to here */
 			}
 			return start;
 		}
+		np = &memtuples[new];
 
-		cmp = cmp_ssup(state, &memtuples[old], &memtuples[new], state->onlyKey);
+		CHECK_FOR_INTERRUPTS();
+		cmp = cmp_ssup(state, op, np, onlyKey);
 		if( state->dedup  &&  cmp == 0 )
 		{
 			int i = old;
-			old = memtuples[old].next;
+			old = op->next;
 			free_sort_tuple(state, &memtuples[i]);
-			memtuples[i].next = state->mergefreelist;
+			op->next = state->mergefreelist;
 			state->mergefreelist = i;
 			if( old < 0 )
 				return start;
-			cmp = cmp_ssup(state, &memtuples[old], &memtuples[new], state->onlyKey);
+			op = &memtuples[old];
+			CHECK_FOR_INTERRUPTS();
+			cmp = cmp_ssup(state, op, np, onlyKey);
 		}
 	} while( cmp > 0 );
 
@@ -1492,8 +1530,9 @@ bound_reached:
 		int i;
 		for(i= old;; i= end)
 		{
-			free_sort_tuple(state, &memtuples[i]);
-			if( (end= memtuples[i].next) < 0 ) break;
+			CHECK_FOR_INTERRUPTS();
+			free_sort_tuple(state, op = &memtuples[i]);
+			if( (end= op->next) < 0 ) break;
 		}
 		memtuples[i].next= state->mergefreelist;
 		state->mergefreelist= old;
@@ -1503,8 +1542,9 @@ bound_reached:
 		int i;
 		for(i= new;; i= end)
 		{
-			free_sort_tuple(state, &memtuples[i]);
-			if( (end= memtuples[i].next) < 0 ) break;
+			CHECK_FOR_INTERRUPTS();
+			free_sort_tuple(state, np = &memtuples[i]);
+			if( (end= np->next) < 0 ) break;
 		}
 		memtuples[i].next= state->mergefreelist;
 		state->mergefreelist= new;
@@ -1521,6 +1561,7 @@ sorb_merge(struct Tuplesortstate * state, int old, int new, const bool backlink)
 	unsigned cnt = 1;
 	int cmp;
 
+	CHECK_FOR_INTERRUPTS();
 	cmp = COMPARETUP(state, &memtuples[old], &memtuples[new]);
 	if( state->dedup  &&  cmp == 0 )
 	{				/* A dup; drop one */
@@ -1531,6 +1572,7 @@ sorb_merge(struct Tuplesortstate * state, int old, int new, const bool backlink)
 		state->mergefreelist = i;
 		if( new < 0 )
 			return old;
+		CHECK_FOR_INTERRUPTS();
 		cmp = COMPARETUP(state, &memtuples[old], &memtuples[new]);
 	}
 
@@ -1566,6 +1608,7 @@ old_lower:
 			return start;
 		}
 
+		CHECK_FOR_INTERRUPTS();
 		cmp = COMPARETUP(state, &memtuples[old], &memtuples[new]);
 		if( state->dedup  &&  cmp == 0 )
 		{
@@ -1576,6 +1619,7 @@ old_lower:
 			state->mergefreelist = i;
 			if( new < 0 )
 				return start;
+			CHECK_FOR_INTERRUPTS();
 			cmp = COMPARETUP(state, &memtuples[old], &memtuples[new]);
 		}
 	} while( cmp <= 0 );
@@ -1601,6 +1645,7 @@ new_lower:
 			return start;
 		}
 
+		CHECK_FOR_INTERRUPTS();
 		cmp = COMPARETUP(state, &memtuples[old], &memtuples[new]);
 		if( state->dedup  &&  cmp == 0 )
 		{
@@ -1611,6 +1656,7 @@ new_lower:
 			state->mergefreelist = i;
 			if( old < 0 )
 				return start;
+			CHECK_FOR_INTERRUPTS();
 			cmp = COMPARETUP(state, &memtuples[old], &memtuples[new]);
 		}
 	} while( cmp > 0 );
@@ -1630,6 +1676,7 @@ bound_reached:
 		int i;
 		for(i= old;; i= end)
 		{
+			CHECK_FOR_INTERRUPTS();
 			free_sort_tuple(state, &memtuples[i]);
 			if( (end= memtuples[i].next) < 0 ) break;
 		}
@@ -1641,6 +1688,7 @@ bound_reached:
 		int i;
 		for(i= new;; i= end)
 		{
+			CHECK_FOR_INTERRUPTS();
 			free_sort_tuple(state, &memtuples[i]);
 			if( (end= memtuples[i].next) < 0 ) break;
 		}
@@ -1659,49 +1707,55 @@ static inline void
 sorb_link_ssup(struct Tuplesortstate * state, int new)
 {
 	SortTuple *memtuples = state->memtuples;
+	SortTuple *np = &memtuples[new];
+	SortTuple *op;
 	int head = state->runhooks[0];
 	int end;
 	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
 	int cmp;
+	SortSupport onlyKey = state->onlyKey;
 
-	memtuples[new].prev = -1;
+	np->prev = -1;
 
 	if ( head >= 0 )
 	{	/* not 1st ever tuple */
+		op = &memtuples[head];
 
-		if( memtuples[head].next == -1 )
+		CHECK_FOR_INTERRUPTS();
+		if( op->next == -1 )
 		{	/* 2nd in run; establishes run direction */
-			cmp = cmp_ssup(state, &memtuples[head], &memtuples[new], state->onlyKey);
+			cmp = cmp_ssup(state, op, np, onlyKey);
 			if( state->dedup  &&  cmp == 0 )
 				goto drop;					/* A duplicate; drop the new one */
 			else if( (cmp <= 0) )
 			{	/* Non-descending order run */
-				state->runlen = 1;
 				if( 1 == bound )
-					goto drop;				/* run already longer than required; drop the new one */
+					goto drop;				/* run already as long as required; drop the new one */
 				else
 				{
-					memtuples[new].next = -1;
-					memtuples[head].next = state->list_end = new;
+					state->runlen = 2;
+					np->next = -1;
+					op->next = state->list_end = new;
 				}
 			}
 			else /* Descending-order run */
 			{
 				if( 1 == state->bound )
-				{	/* run already longer than required; drop the head one */
-					free_sort_tuple(state, &memtuples[head]);
-					memtuples[head].tuple = memtuples[new].tuple;
-					memtuples[head].datum1 = memtuples[new].datum1;
-					memtuples[head].isnull1 = memtuples[new].isnull1;
-					memtuples[new].next = state->mergefreelist;
+				{	/* run already as long as required; drop the head one */
+					CHECK_FOR_INTERRUPTS();
+					free_sort_tuple(state, op);
+					op->tuple = np->tuple;
+					op->datum1 = np->datum1;
+					op->isnull1 = np->isnull1;
+					np->next = state->mergefreelist;
 					state->mergefreelist = new;
 				}
 				else
 				{
-					state->runlen = -1;
-					memtuples[new].next = head;
+					state->runlen = -2;
+					np->next = head;
 					state->runhooks[0] = new;
-					memtuples[head].prev = new;
+					op->prev = new;
 				}
 			}
 			return;	/* 2-element list is on hook 0 */
@@ -1711,44 +1765,48 @@ sorb_link_ssup(struct Tuplesortstate * state, int new)
 		if( state->runlen > 0 )
 		{	/* Non-descending order run */
 			end = state->list_end;
-			cmp = cmp_ssup(state, &memtuples[end], &memtuples[new], state->onlyKey);
+			op = &memtuples[end];
+			cmp = cmp_ssup(state, op, np, onlyKey);
 			if( state->dedup  &&  cmp == 0 )
 				goto drop;					/* A duplicate; drop the new one */
 			else if( (cmp <= 0) )
 			{	/* new tuple extends run */
 				if( state->runlen >= bound )
-					goto drop;				/* run now longer than required; drop the new one */
+					goto drop;				/* run already as long as required; drop the new one */
 				else
-				{
+				{							/* append the new one */
 					++state->runlen;
-					memtuples[new].next = -1;
-					memtuples[end].next = state->list_end = new;
+					np->next = -1;
+					op->next = state->list_end = new;
 				}
 				return;	/* >=2 element list, on hook 0 */
 			}
 		}
 		else
 		{	/* Descending-order run */
-			cmp = cmp_ssup(state, &memtuples[head], &memtuples[new], state->onlyKey);
+			cmp = cmp_ssup(state, op, np, onlyKey);
 			if( state->dedup  &&  cmp == 0 )
 				goto drop;					/* A duplicate; drop the new one */
 			else if( (cmp > 0) )
 			{	/* new tuple extends run */
 				if( -state->runlen >= bound )
-				{	/* run now longer than required; drop the largest one */
+				{	/* run already as long as required; drop the largest one & keep the new */
+					SortTuple *ep;
 					end = state->list_end;
-					free_sort_tuple(state, &memtuples[end]);
-					memtuples[end].next = state->mergefreelist;
+					ep = &memtuples[end];
+					CHECK_FOR_INTERRUPTS();
+					free_sort_tuple(state, ep);
+					ep->next = state->mergefreelist;
 					state->mergefreelist = end;
-					state->list_end = end = memtuples[end].prev;
-					memtuples[end].next = -1;
+					state->list_end = end = ep->prev;
+					ep->next = -1;
 				}
 				else
 					--state->runlen;
-
-				memtuples[new].next = head;
+											/* prepend the new one */
+				np->next = head;
 				state->runhooks[0] = new;
-				memtuples[head].prev = new;
+				op->prev = new;
 				return;	/* >=2 element list, on hook 0 */
 			}
 		}
@@ -1758,10 +1816,20 @@ sorb_link_ssup(struct Tuplesortstate * state, int new)
 		 * Merge the run to free hook zero, then place the tuple
 		 * as first in a new run onto it.
 		 */
+{
+int i;
+if(state->runlen < 0) state->runlen= -state->runlen;
+for(i= 1, state->runlen /= 4; state->runlen; state->runlen /= 2) i++;
+/* i is now the hook to merge this run at */
+
+/* note this choice makes the sort non-stable; to maintain stability we could
+   merge all hooks from 1 to at least i first, then place or merge at i. */
+/* Maybe we should have a stability option switch. */
+
 		{
 			int hook;
 			int start = state->runhooks[0];
-			for ( hook = 1;
+			for ( hook = i;
 				  state->runhooks[hook] >= 0  &&  hook <= state->maxhook + 1;
 				  hook++ )
 			{
@@ -1780,16 +1848,18 @@ sorb_link_ssup(struct Tuplesortstate * state, int new)
 			}
 			state->runhooks[hook] = start;
 		}
+}
 	}
 
-	memtuples[new].next = -1;
+	np->next = -1;
 	state->runhooks[0] = state->list_end = new;
 	return;	/* 1-element list, on hook 0 */
 
 drop:
 	/* A duplicate; drop the new one */
+	CHECK_FOR_INTERRUPTS();
 	free_sort_tuple(state, &memtuples[new]);
-	memtuples[new].next = state->mergefreelist;
+	np->next = state->mergefreelist;
 	state->mergefreelist = new;
 	return;
 }
@@ -1807,6 +1877,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 	if ( head >= 0 )
 	{	/* not 1st ever tuple */
 
+		CHECK_FOR_INTERRUPTS();
 		if( memtuples[head].next == -1 )
 		{	/* 2nd in run; establishes run direction */
 			cmp = COMPARETUP(state, &memtuples[head], &memtuples[new]);
@@ -1827,6 +1898,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 			{
 				if( 1 == state->bound )
 				{	/* run already longer than required; drop the head one */
+					CHECK_FOR_INTERRUPTS();
 					free_sort_tuple(state, &memtuples[head]);
 					memtuples[head].tuple = memtuples[new].tuple;
 					memtuples[head].datum1 = memtuples[new].datum1;
@@ -1925,6 +1997,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 
 drop:
 	/* A duplicate; drop the new one */
+	CHECK_FOR_INTERRUPTS();
 	free_sort_tuple(state, &memtuples[new]);
 	memtuples[new].next = state->mergefreelist;
 	state->mergefreelist = new;

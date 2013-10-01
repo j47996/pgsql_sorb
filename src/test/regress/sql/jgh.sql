@@ -7,11 +7,19 @@ INSERT INTO jgh (i) SELECT 20000 * random() FROM generate_series(1, 20000);
 
 -- external sort
 explain analyze SELECT * FROM jgh ORDER BY i;
+
+set enable_hashagg to off;
 set work_mem to 16384;
 -- internal merge
 explain analyze SELECT * FROM jgh ORDER BY i;
 set enable_intmerge_sort to off;
 -- internal quicksort
+explain analyze SELECT * FROM jgh ORDER BY i;
+set enable_intmerge_sort to on;
+-- internal merge retry
+explain analyze SELECT * FROM jgh ORDER BY i;
+set enable_intmerge_sort to off;
+-- internal quicksort retry
 explain analyze SELECT * FROM jgh ORDER BY i;
 set enable_intmerge_sort to on;
 
