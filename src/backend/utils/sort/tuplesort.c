@@ -1374,6 +1374,88 @@ tuplesort_putdatum(Tuplesortstate *state, Datum val, bool isNull)
 /* Sorb 2nd/3rd stage: merge a pair of lists. */
 /* If requested, fill in backlinks as we go, and note how far backlinking got.*/
 static int
+sorb_merge_basic(struct Tuplesortstate * state, int old, int new)
+{
+	SortTuple *memtuples = state->memtuples;
+	SortTuple *op = &memtuples[old];
+	SortTuple *np = &memtuples[new];
+	int start;
+	int end = -1;
+	int cmp;
+	const SortSupport onlyKey = state->onlyKey;
+
+	CHECK_FOR_INTERRUPTS();
+	cmp = cmp_ssup(state, op, np, onlyKey);
+	if( cmp > 0 )
+	{
+		start = new;
+		goto new_lower;
+	}
+	start = old;
+
+old_lower:
+	do {
+		end = old;
+		old = op->next;
+		if( old == -1 )	/* Just link "new" list on the end */
+		{
+			/*
+			 * Now here's an interesting question.  It seems obvious 
+			 * to just link the tail of the unexhausted list after the
+			 * merged list, to gain a max-length resulting merge with
+			 * no effort.  But do we actually lose out in the long
+			 * run?
+			 * The posit of the Sorb developer was that best performance
+			 * was obtained by merging lists of equal length - hence the
+			 * development of the exponential merge schedule.  Does this
+			 * imply that *not* doing compare work on the tail is a
+			 * is a performance loss?  I do not see how to analyse this.
+			 *
+			 * We could implement some scheme for returning the tail
+			 * separately from the merge-result, and optimally place it
+			 * on a hook.  But what if it's longer than the merge? Is
+			 * that an issue?  Mind, it should not happen given the
+			 * (stability-losing) optimal hook placement of initially
+			 * linked runs. More likely to happen is that the merge is
+			 * not long enough to be optimally placed on the next hook.
+			 * Also, this scheme will probably destroy stability itself.
+			 *
+			 * Posibly the way to view the issue is that the merged
+			 * part has double the information density but the tail
+			 * density is unaltered.  On that basis the tail should be
+			 * re-placed on the current hook (and the merge on the next)..
+			 */
+
+			memtuples[end].next = new;
+			return start;
+		}
+		op = &memtuples[old];
+
+		CHECK_FOR_INTERRUPTS();
+		cmp = cmp_ssup(state, op, np, onlyKey);
+	} while( cmp <= 0 );
+
+	memtuples[end].next = new;
+
+new_lower:
+	do {
+		end = new;
+		new = np->next;
+		if( new == -1 )	/* Just link the "old" list on the end */
+		{
+			memtuples[end].next = old;
+			return start;
+		}
+		np = &memtuples[new];
+
+		CHECK_FOR_INTERRUPTS();
+		cmp = cmp_ssup(state, op, np, onlyKey);
+	} while( cmp > 0 );
+
+	memtuples[end].next = old;
+	goto old_lower;
+}
+static int
 sorb_merge_ssup(struct Tuplesortstate * state, int old, int new,
 			const bool backlink)
 {
@@ -2125,7 +2207,7 @@ sorb_oneshot(struct Tuplesortstate * state)
 				  state->runhooks[hook] >= 0  &&  hook <= state->maxhook + 1;
 				  hook++ )
 			{
-				hi= onlyKey ? sorb_merge_ssup(state, state->runhooks[hook], hi, false)
+				hi= onlyKey ? sorb_merge_basic(state, state->runhooks[hook], hi)
 							: sorb_merge(state, state->runhooks[hook], hi, false);
 				state->runhooks[hook] = -1;
 			}
