@@ -2071,6 +2071,7 @@ sorb_oneshot(struct Tuplesortstate * state)
 	SortTuple *ep;	/* end of run */
 	const int lim = state->memtupcount;
 	const SortSupport onlyKey = state->onlyKey;
+	int runlen;
 
 	/* No bounds or dedup; TSS_SORB is used for them */
 
@@ -2078,7 +2079,7 @@ sorb_oneshot(struct Tuplesortstate * state)
 	item = 0, np = memtuples;
 	while(item < lim)
 	{
-		hi = item, hp = ep = np;
+		hi = item, hp = ep = np, runlen = 1;
 
 		if(++item < lim)
 		{
@@ -2086,22 +2087,20 @@ sorb_oneshot(struct Tuplesortstate * state)
 			np++;
 			if((onlyKey ? cmp_ssup(state, hp, np, onlyKey)
 					    : COMPARETUP(state, hp, np)) <= 0)
-							/* non-descending order run */
-				do			/* append to list */
-				{
+				do			/* non-descending order run */
+				{			/* append to list */
 					CHECK_FOR_INTERRUPTS();
-					ep->next = item;
+					ep->next = item, runlen++;
 					ep = np;
 					if(++item >= lim) break;
 					np++;
 				} while((onlyKey ? cmp_ssup(state, ep, np, onlyKey)
 								 : COMPARETUP(state, ep, np)) <= 0);
-			else
-							/* descending-order run */
-				do			/* prepend to list */
-				{
+			else			
+				do			/* descending-order run */
+				{			/* prepend to list */
 					CHECK_FOR_INTERRUPTS();
-					np->next = hi;
+					np->next = hi, runlen++;
 					hp = np, hi = item;
 					if(++item >= lim) break;
 					np++;
@@ -2112,10 +2111,17 @@ sorb_oneshot(struct Tuplesortstate * state)
 		}
 		ep->next = -1;
 
-		/* merge run onto hooks starting at 1 */
+		/* Merge run onto hooks starting at optimal placement point.
+		 * This gives 1.6% fewer compares at N=2e5 random, compared to
+		 * always starting at the bottom.
+		 */
+/* note this choice makes the sort non-stable; to maintain stability we could
+   merge all hooks from 0 to at least here first, then place or merge here. */
+/* Maybe we should have a stability option switch. */
 		{
 			int hook;
-			for ( hook = 1;
+			for ( hook= 0, runlen /= 4; runlen; runlen /= 2 ) hook++;
+			for ( ;
 				  state->runhooks[hook] >= 0  &&  hook <= state->maxhook + 1;
 				  hook++ )
 			{
