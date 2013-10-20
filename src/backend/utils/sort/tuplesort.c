@@ -1442,6 +1442,11 @@ old_lower:
 			 * linked runs. More likely to happen is that the merge is
 			 * not long enough to be optimally placed on the next hook.
 			 * Also, this scheme will probably destroy stability itself.
+			 *
+			 * Posibly the way to view the issue is that the merged
+			 * part has double the information density but the tail
+			 * density is unaltered.  On that basis the tail should be
+			 * re-placed on the current hook (and the merge on the next)..
 			 */
 
 			/*
@@ -2097,10 +2102,10 @@ sorb_oneshot(struct Tuplesortstate * state)
 					hp = np, hi = item;
 				} while(++item < lim && (cmp = cmp_ssup(state, hp, ++np, onlyKey)) > 0);
 			}
-			ep->next = -1;
 			/* item, np breaks run (or past eof) */
 			/* hi is now the head of a non-descending run */
 		}
+		ep->next = -1;
 
 		/* merge run onto hooks starting at 1 */
 		{
