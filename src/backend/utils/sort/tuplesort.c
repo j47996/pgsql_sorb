@@ -2073,7 +2073,7 @@ sorb_oneshot(struct Tuplesortstate * state)
 	int lim = state->memtupcount;
 	SortSupport onlyKey = state->onlyKey;
 
-/*XXX no bounds or dedup yet */
+	/* No bounds or dedup; TSS_SORB is used for them */
 
 	/* Linker, with scheduled partial merges */
 	item = 0, np = memtuples;
@@ -2084,24 +2084,30 @@ sorb_oneshot(struct Tuplesortstate * state)
 		if(++item < lim)
 		{
 			CHECK_FOR_INTERRUPTS();
-			if ((cmp = cmp_ssup(state, hp, ++np, onlyKey)) <= 0)
-			{				/* non-descending order run */
+			np++;
+			if((cmp= onlyKey ? cmp_ssup(state, hp, np, onlyKey)
+							 : COMPARETUP(state, hp, np)) <= 0)
+							/* non-descending order run */
 				do			/* append to list */
 				{
 					CHECK_FOR_INTERRUPTS();
 					ep->next = item;
 					ep = np, ei = item;
-				} while(++item < lim && (cmp = cmp_ssup(state, ep, ++np, onlyKey)) <= 0);
-			}
+					if(++item >= lim) break;
+					np++;
+				} while((cmp= onlyKey ? cmp_ssup(state, ep, np, onlyKey)
+									  : COMPARETUP(state, ep, np)) <= 0);
 			else
-			{				/* descending-order run */
+							/* descending-order run */
 				do			/* prepend to list */
 				{
 					CHECK_FOR_INTERRUPTS();
 					np->next = hi;
 					hp = np, hi = item;
-				} while(++item < lim && (cmp = cmp_ssup(state, hp, ++np, onlyKey)) > 0);
-			}
+					if(++item >= lim) break;
+					np++;
+				} while((cmp= onlyKey ? cmp_ssup(state, ep, np, onlyKey)
+									  : COMPARETUP(state, ep, np)) > 0);
 			/* item, np breaks run (or past eof) */
 			/* hi is now the head of a non-descending run */
 		}
@@ -2114,9 +2120,8 @@ sorb_oneshot(struct Tuplesortstate * state)
 				  state->runhooks[hook] >= 0  &&  hook <= state->maxhook + 1;
 				  hook++ )
 			{
-				hi= onlyKey != NULL
-					? sorb_merge_ssup(state, state->runhooks[hook], hi, false)
-					: sorb_merge(state, state->runhooks[hook], hi, false);
+				hi= onlyKey ? sorb_merge_ssup(state, state->runhooks[hook], hi, false)
+							: sorb_merge(state, state->runhooks[hook], hi, false);
 				state->runhooks[hook] = -1;
 			}
 			/* all hooks up to "hook" now free; use top one for exp schedule */
@@ -2134,9 +2139,8 @@ sorb_oneshot(struct Tuplesortstate * state)
 	}
 
 	/* Collector */
-	return onlyKey != NULL
-		? sorb_collector_ssup(state, state->randomAccess)
-		: sorb_collector(state, state->randomAccess);
+	return onlyKey ? sorb_collector_ssup(state, state->randomAccess)
+				   : sorb_collector(state, state->randomAccess);
 }
 
 /*
