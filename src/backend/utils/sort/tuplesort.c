@@ -2064,14 +2064,13 @@ static int
 sorb_oneshot(struct Tuplesortstate * state)
 {
 	SortTuple *memtuples = state->memtuples;
-	int item, cmp;
+	int item;
 	SortTuple *np;
 	SortTuple *hp;	/* head of run */
 	int hi;
 	SortTuple *ep;	/* end of run */
-	int ei;
-	int lim = state->memtupcount;
-	SortSupport onlyKey = state->onlyKey;
+	const int lim = state->memtupcount;
+	const SortSupport onlyKey = state->onlyKey;
 
 	/* No bounds or dedup; TSS_SORB is used for them */
 
@@ -2079,24 +2078,24 @@ sorb_oneshot(struct Tuplesortstate * state)
 	item = 0, np = memtuples;
 	while(item < lim)
 	{
-		hi = ei = item, hp = ep = np;
+		hi = item, hp = ep = np;
 
 		if(++item < lim)
 		{
 			CHECK_FOR_INTERRUPTS();
 			np++;
-			if((cmp= onlyKey ? cmp_ssup(state, hp, np, onlyKey)
-							 : COMPARETUP(state, hp, np)) <= 0)
+			if((onlyKey ? cmp_ssup(state, hp, np, onlyKey)
+					    : COMPARETUP(state, hp, np)) <= 0)
 							/* non-descending order run */
 				do			/* append to list */
 				{
 					CHECK_FOR_INTERRUPTS();
 					ep->next = item;
-					ep = np, ei = item;
+					ep = np;
 					if(++item >= lim) break;
 					np++;
-				} while((cmp= onlyKey ? cmp_ssup(state, ep, np, onlyKey)
-									  : COMPARETUP(state, ep, np)) <= 0);
+				} while((onlyKey ? cmp_ssup(state, ep, np, onlyKey)
+								 : COMPARETUP(state, ep, np)) <= 0);
 			else
 							/* descending-order run */
 				do			/* prepend to list */
@@ -2106,8 +2105,8 @@ sorb_oneshot(struct Tuplesortstate * state)
 					hp = np, hi = item;
 					if(++item >= lim) break;
 					np++;
-				} while((cmp= onlyKey ? cmp_ssup(state, ep, np, onlyKey)
-									  : COMPARETUP(state, ep, np)) > 0);
+				} while((onlyKey ? cmp_ssup(state, hp, np, onlyKey)
+								 : COMPARETUP(state, hp, np)) > 0);
 			/* item, np breaks run (or past eof) */
 			/* hi is now the head of a non-descending run */
 		}
