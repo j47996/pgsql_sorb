@@ -168,9 +168,12 @@ loop:
 /*		qsort_tuple(pn - r, r, cmp_tuple, state);*/
 }
 
-#define cmp_ssup(s, a, b, ssup) \
-	((s)->cmpcnt++, ApplySortComparator((a)->datum1, (a)->isnull1, \
-						(b)->datum1, (b)->isnull1, ssup))
+static int inline
+cmp_ssup(struct Tuplesortstate *s, SortTuple *a, SortTuple *b, SortSupport ssup)
+{
+	s->cmpcnt++;
+	return ApplySortComparator(a->datum1, a->isnull1, b->datum1, b->isnull1, ssup);
+}
 static SortTuple *
 med3_ssup(struct Tuplesortstate * state, SortTuple *a, SortTuple *b, SortTuple *c, SortSupport ssup)
 {
