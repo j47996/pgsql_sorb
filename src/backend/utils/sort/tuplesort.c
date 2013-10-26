@@ -768,7 +768,7 @@ tuplesort_begin_heap(TupleDesc tupDesc,
 					 int nkeys, AttrNumber *attNums,
 					 Oid *sortOperators, Oid *sortCollations,
 					 bool *nullsFirstFlags,
-					 int workMem, bool dedup, bool randomAccess)
+					 int workMem, bool * dedup, bool randomAccess)
 {
 	Tuplesortstate *state = tuplesort_begin_common(workMem, randomAccess);
 	MemoryContext oldcontext;
@@ -783,12 +783,14 @@ tuplesort_begin_heap(TupleDesc tupDesc,
 		elog(LOG,
 			 "begin heap sort: nkeys = %d, workMem = %d, dedup = %c, randomAccess = %c",
 			 nkeys, workMem,
-			 dedup ? 't' : 'f', randomAccess ? 't' : 'f');
+			 *dedup ? 't' : 'f', randomAccess ? 't' : 'f');
 #endif
 
 	state->nKeys = nkeys;
-	if ((state->dedup = dedup && optimize_dedup_sort) && enable_intmerge_sort)
+	if ((state->dedup = *dedup && optimize_dedup_sort) && enable_intmerge_sort)
 		state->status = TSS_SORB;
+	else
+		*dedup = false;
 
 	TRACE_POSTGRESQL_SORT_START(HEAP_SORT,
 								false,	/* no unique check */
@@ -1379,6 +1381,7 @@ sorb_merge_basic(struct Tuplesortstate * state, int old, int new)
 	int cmp;
 	const SortSupport onlyKey = state->onlyKey;
 
+	/* ssup, no bounds, no dedup, no backlinking */
 	CHECK_FOR_INTERRUPTS();
 	cmp = cmp_ssup(op, np, onlyKey);
 	if( cmp > 0 )
@@ -1394,33 +1397,6 @@ old_lower:
 		old = op->next;
 		if( old == -1 )	/* Just link "new" list on the end */
 		{
-			/*
-			 * Now here's an interesting question.  It seems obvious 
-			 * to just link the tail of the unexhausted list after the
-			 * merged list, to gain a max-length resulting merge with
-			 * no effort.  But do we actually lose out in the long
-			 * run?
-			 * The posit of the Sorb developer was that best performance
-			 * was obtained by merging lists of equal length - hence the
-			 * development of the exponential merge schedule.  Does this
-			 * imply that *not* doing compare work on the tail is a
-			 * is a performance loss?  I do not see how to analyse this.
-			 *
-			 * We could implement some scheme for returning the tail
-			 * separately from the merge-result, and optimally place it
-			 * on a hook.  But what if it's longer than the merge? Is
-			 * that an issue?  Mind, it should not happen given the
-			 * (stability-losing) optimal hook placement of initially
-			 * linked runs. More likely to happen is that the merge is
-			 * not long enough to be optimally placed on the next hook.
-			 * Also, this scheme will probably destroy stability itself.
-			 *
-			 * Posibly the way to view the issue is that the merged
-			 * part has double the information density but the tail
-			 * density is unaltered.  On that basis the tail should be
-			 * re-placed on the current hook (and the merge on the next)..
-			 */
-
 			memtuples[end].next = new;
 			return start;
 		}
@@ -1499,39 +1475,6 @@ old_lower:
 
 		if( old == -1 )	/* Just link "new" list on the end */
 		{
-			/*
-			 * Now here's an interesting question.  It seems obvious 
-			 * to just link the tail of the unexhausted list after the
-			 * merged list, to gain a max-length resulting merge with
-			 * no effort.  But do we actually lose out in the long
-			 * run?
-			 * The posit of the Sorb developer was that best performance
-			 * was obtained by merging lists of equal length - hence the
-			 * development of the exponential merge schedule.  Does this
-			 * imply that *not* doing compare work on the tail is a
-			 * is a performance loss?  I do not see how to analyse this.
-			 *
-			 * We could implement some scheme for returning the tail
-			 * separately from the merge-result, and optimally place it
-			 * on a hook.  But what if it's longer than the merge? Is
-			 * that an issue?  Mind, it should not happen given the
-			 * (stability-losing) optimal hook placement of initially
-			 * linked runs. More likely to happen is that the merge is
-			 * not long enough to be optimally placed on the next hook.
-			 * Also, this scheme will probably destroy stability itself.
-			 *
-			 * Posibly the way to view the issue is that the merged
-			 * part has double the information density but the tail
-			 * density is unaltered.  On that basis the tail should be
-			 * re-placed on the current hook (and the merge on the next)..
-			 */
-
-			/*
-			 * If bounded but not yet there, we could walk the "new"
-			 * list counting, and trim once it went over the bound -
-			 * but we're not doing any more comparisons so probably
-			 * not worthwhile here (unless memory is under pressure?)
-			 */
 			memtuples[end].next = new;
 			if( backlink )
 			{
@@ -2134,9 +2077,6 @@ sorb_collector(struct Tuplesortstate * state, bool backlink)
 }
 
 /* Do the whole sorb thing on an already-loaded array */
-/*XXX could we use the pointers implementation?  Does randomAccess say no? */
-/* Leave for now; all the randomAccess routines would need looking at; this
-   is probably the only gotcha beyond making the SortTuple a union */
 static int
 sorb_oneshot(struct Tuplesortstate * state)
 {
@@ -2207,14 +2147,8 @@ sorb_oneshot(struct Tuplesortstate * state)
 				state->runhooks[hook] = -1;
 			}
 			/* all hooks up to "hook" now free; use top one for exp schedule */
-			/* or lower to save memory for bounded case */
 			if( hook > state->maxhook )
-			{
-				if ( state->bounded  &&  1<<hook > state->bound - state->bound/4 )
-					--hook;
-				else
-					state->maxhook = hook;
-			}
+				state->maxhook = hook;
 			state->runhooks[hook] = hi;
 		}
 		/* start over with the run-breaking item */
@@ -2920,7 +2854,7 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 		case TSS_FINALMERGE:
 			Assert(forward);
 			*should_free = true;
-
+fmerge:
 			/*
 			 * This code should match the inner loop of mergeonerun().
 			 */
@@ -2930,14 +2864,25 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 				Size		tuplen;
 				int			tupIndex;
 				SortTuple  *newtup;
+				bool checkIndex = true;	/* for HEAPCOMPARE */
 
-				*stup = state->memtuples[0];
-				/* returned tuple is no longer counted in our memory space */
-				if (stup->tuple)
+				if (state->dedup && state->memtupcount > 1 &&
+					HEAPCOMPARE(&state->memtuples[0],&state->memtuples[1]) == 0)
+				{				/* A dup; drop one */
+					FREEMEM(state, GetMemoryChunkSpace(state->memtuples[0].tuple));
+					heap_free_minimal_tuple(state->memtuples[0].tuple);
+					checkIndex = false;
+				}
+				else
 				{
-					tuplen = GetMemoryChunkSpace(stup->tuple);
-					state->availMem += tuplen;
-					state->mergeavailmem[srcTape] += tuplen;
+					*stup = state->memtuples[0];
+					/* returned tuple is no longer counted in our memory space */
+					if (stup->tuple)
+					{
+						tuplen = GetMemoryChunkSpace(stup->tuple);
+						state->availMem += tuplen;
+						state->mergeavailmem[srcTape] += tuplen;
+					}
 				}
 				tuplesort_heap_siftup(state, false);
 				if ((tupIndex = state->mergenext[srcTape]) == 0)
@@ -2954,7 +2899,7 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 					 * if still no data, we've reached end of run on this tape
 					 */
 					if ((tupIndex = state->mergenext[srcTape]) == 0)
-						return true;
+						goto fmerge_done;
 				}
 				/* pull next preread tuple from list, insert in heap */
 				newtup = &state->memtuples[tupIndex];
@@ -2966,6 +2911,8 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 				newtup->tupindex = state->mergefreelist;
 				state->mergefreelist = tupIndex;
 				state->mergeavailslots[srcTape]++;
+fmerge_done:	if (!checkIndex)
+					goto fmerge;
 				return true;
 			}
 			return false;
@@ -3402,7 +3349,7 @@ mergeonerun(Tuplesortstate *state)
 	while (state->memtupcount > 0)
 	{
 		bool checkIndex = true;	/* for HEAPCOMPARE */
-		if (state-> dedup && state->memtupcount > 1 &&
+		if (state->dedup && state->memtupcount > 1 &&
 			HEAPCOMPARE(&state->memtuples[0], &state->memtuples[1]) == 0)
 		{				/* A dup; drop one */
 			FREEMEM(state, GetMemoryChunkSpace(state->memtuples[0].tuple));

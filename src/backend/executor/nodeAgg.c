@@ -305,6 +305,7 @@ initialize_aggregates(AggState *aggstate,
 		 */
 		if (peraggstate->numSortCols > 0)
 		{
+			bool b_false;
 			/*
 			 * In case of rescan, maybe there could be an uncompleted sort
 			 * operation?  Clean it up if so.
@@ -330,7 +331,7 @@ initialize_aggregates(AggState *aggstate,
 									 peraggstate->sortOperators,
 									 peraggstate->sortCollations,
 									 peraggstate->sortNullsFirst,
-									 work_mem, false, false);
+									 work_mem, &b_false, false);
 		}
 
 		/*

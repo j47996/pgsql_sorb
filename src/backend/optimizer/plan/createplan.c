@@ -4476,6 +4476,9 @@ make_unique(Plan *lefttree, List *distinctList)
 	 * Charge one cpu_operator_cost per comparison per input tuple. We assume
 	 * all columns get compared at most of the tuples.	(XXX probably this is
 	 * an overestimate.)
+	 * XXX If the input subplan is a sort which is supporting dedup, we could
+	 * skip all the work and charge a zero cost.  Unfortunately at present
+	 * we don't discover this until ExecSort() time; too late for planning.
 	 */
 	plan->total_cost += cpu_operator_cost * plan->plan_rows * numCols;
 
