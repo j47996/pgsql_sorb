@@ -169,7 +169,7 @@ loop:
 }
 
 #define cmp_ssup(s, a, b, ssup) \
-((s)->cmpcnt++, ApplySortComparator((a)->datum1, (a)->isnull1, (b)->datum1, (b)->isnull1, ssup))
+ApplySortComparator((a)->datum1, (a)->isnull1, (b)->datum1, (b)->isnull1, ssup)
 
 static SortTuple *
 med3_ssup(struct Tuplesortstate * state, SortTuple *a, SortTuple *b, SortTuple *c, SortSupport ssup)

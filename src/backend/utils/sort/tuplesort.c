@@ -539,7 +539,6 @@ struct Tuplesortstate
 	int			list_end;
 	int			runlen;
 	bool		reverse_linkage;
-	int			cmpcnt;
 
 	/*
 	 * Resource snapshot for time of sort start.
@@ -549,7 +548,7 @@ struct Tuplesortstate
 #endif
 };
 
-#define COMPARETUP(state,a,b)	((state)->cmpcnt++, (*(state)->comparetup) (a, b, state))
+#define COMPARETUP(state,a,b)	((*(state)->comparetup) (a, b, state))
 #define COPYTUP(state,stup,tup) ((*(state)->copytup) (state, stup, tup))
 #define WRITETUP(state,tape,stup)	((*(state)->writetup) (state, tape, stup))
 #define READTUP(state,stup,tape,len) ((*(state)->readtup) (state, stup, tape, len))
@@ -715,7 +714,6 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 	state = (Tuplesortstate *) palloc0(sizeof(Tuplesortstate));
 
 #ifdef TRACE_SORT
-	trace_sort = true;
 	if (trace_sort)
 		pg_rusage_init(&state->ru_start);
 #endif
@@ -730,7 +728,6 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 		state->mergefreelist= -1;
 	}
 	state->status = TSS_INITIAL;
-	state->cmpcnt = 0;
 
 	state->randomAccess = randomAccess;
 	state->dedup = false;
@@ -1105,12 +1102,10 @@ tuplesort_end(Tuplesortstate *state)
 	if (trace_sort)
 	{
 		if (state->tapeset)
-			elog(NOTICE, "external sort ended, %u cmps, %ld disk blocks used: %s",
-				 state->cmpcnt,
+			elog(NOTICE, "external sort ended, %ld disk blocks used: %s",
 				 spaceUsed, pg_rusage_show(&state->ru_start));
 		else
-			elog(NOTICE, "internal sort ended, %u cmps, %ld KB used: %s",
-				 state->cmpcnt,
+			elog(NOTICE, "internal sort ended, %ld KB used: %s",
 				 spaceUsed, pg_rusage_show(&state->ru_start));
 	}
 
