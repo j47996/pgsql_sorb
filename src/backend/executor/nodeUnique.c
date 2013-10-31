@@ -49,7 +49,6 @@ ExecUnique(UniqueState *node)
 	TupleTableSlot *resultTupleSlot;
 	TupleTableSlot *slot;
 	PlanState  *outerPlan;
-	bool		skip = false;
 
 	/*
 	 * get information from the node
@@ -77,24 +76,9 @@ ExecUnique(UniqueState *node)
 
 		/*
 		 * Always return the first tuple from the subplan.
-XXX if the outerPlan is a sort supporting dedup, after the first Exec
-call we can know if dedup is being done in-sort. If so, skip all compares.
-Currently this info arrives too late for planning.
-Best would be to never build the node, so avoiding the copying also. For
-that we would need to know at the point we call make_unique().
 		 */
-		if (skip)
-			break;
 		if (TupIsNull(resultTupleSlot))
-		{
-			if (outerPlan->type == T_Sort)
-			{
-			    SortState * ss = outerPlan;
-				if(((Sort *)ss->ss.ps.plan)->dedup)
-				    skip = true;
-			}
 			break;
-		}
 
 		/*
 		 * Else test if the new tuple and the previously returned tuple match.

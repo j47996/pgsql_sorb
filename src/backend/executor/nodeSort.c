@@ -89,7 +89,7 @@ ExecSort(SortState *node)
 											  plannode->collations,
 											  plannode->nullsFirst,
 											  work_mem,
-											  &((Sort *)node->ss.ps.plan)->dedup,
+									  &((Sort *)node->ss.ps.plan)->dedup_req,
 											  node->randomAccess);
 		if (node->bounded)
 			tuplesort_set_bound(tuplesortstate, node->bound);
@@ -173,8 +173,10 @@ ExecInitSort(Sort *node, EState *estate, int eflags)
 										 EXEC_FLAG_BACKWARD |
 										 EXEC_FLAG_MARK)) != 0;
 
-	sortstate->dedup = node->dedup;	/*XXX this seems to get lost by the call to ExecProcNode;
-									 * hack it in ExecSort to use the Plan not the PlanState. */
+	/*XXX this seems to get lost by the call to ExecProcNode;
+	 * hack it in ExecSort to use the Plan not the PlanState. */
+	sortstate->dedup = node->dedup_req;
+
 	sortstate->bounded = false;
 	sortstate->sort_Done = false;
 	sortstate->tuplesortstate = NULL;

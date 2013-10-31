@@ -67,6 +67,9 @@ typedef struct
 	List	   *activeWindows;	/* active windows, if any */
 } standard_qp_extra;
 
+extern bool plan_supports_uniq(Plan *plan);
+
+
 /* Local functions */
 static Node *preprocess_expression(PlannerInfo *root, Node *expr, int kind);
 static void preprocess_qual_conditions(PlannerInfo *root, Node *jtnode);
@@ -1886,8 +1889,10 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 															   -1.0);
 			}
 
-			result_plan = (Plan *) make_unique(result_plan,
+			if (!plan_supports_uniq(result_plan))
+				result_plan = (Plan *) make_unique(result_plan,
 											   parse->distinctClause);
+
 			result_plan->plan_rows = dNumDistinctRows;
 			/* The Unique node won't change sort ordering */
 		}

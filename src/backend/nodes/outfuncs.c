@@ -739,7 +739,8 @@ _outSort(StringInfo str, const Sort *node)
 	for (i = 0; i < node->numCols; i++)
 		appendStringInfo(str, " %s", booltostr(node->nullsFirst[i]));
 
-	WRITE_BOOL_FIELD(dedup);
+	WRITE_BOOL_FIELD(dedup_req);
+	WRITE_BOOL_FIELD(dedup_supp);
 }
 
 static void

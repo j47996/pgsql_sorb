@@ -590,7 +590,8 @@ typedef struct Sort
 	Oid		   *sortOperators;	/* OIDs of operators to sort them by */
 	Oid		   *collations;		/* OIDs of collations */
 	bool	   *nullsFirst;		/* NULLS FIRST/LAST directions */
-	bool		dedup;			/* Uniqify where possible during sort */
+	bool		dedup_req;		/* Uniqify where possible during sort */
+	bool		dedup_supp;		/* Full uniquify is supported */
 } Sort;
 
 /* ---------------

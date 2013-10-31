@@ -150,6 +150,7 @@ static MergeJoin *make_mergejoin(List *tlist,
 			   bool *mergenullsfirst,
 			   Plan *lefttree, Plan *righttree,
 			   JoinType jointype);
+       bool plan_supports_uniq(Plan *plan);
 static Sort *make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 		  AttrNumber *sortColIdx, Oid *sortOperators,
 		  Oid *collations, bool *nullsFirst, bool dedup,
@@ -1065,7 +1066,8 @@ create_unique_plan(PlannerInfo *root, UniquePath *best_path)
 			groupColPos++;
 		}
 		plan = (Plan *) make_sort_from_sortclauses(root, sortList, subplan, true);
-		plan = (Plan *) make_unique(plan, sortList);
+		if (!plan_supports_uniq(plan))
+			plan = (Plan *) make_unique(plan, sortList);
 	}
 
 	/* Adjust output size estimate (other fields should be OK already) */
@@ -3747,6 +3749,14 @@ make_mergejoin(List *tlist,
 	return node;
 }
 
+bool
+plan_supports_uniq(Plan *plan)
+{
+    if (plan->type == T_Sort)
+        return ((Sort *)plan)->dedup_supp;
+    return false;
+}
+
 /*
  * make_sort --- basic routine to build a Sort plan node
  *
@@ -3783,7 +3793,10 @@ make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 	node->sortOperators = sortOperators;
 	node->collations = collations;
 	node->nullsFirst = nullsFirst;
-	node->dedup = dedup;
+
+	node->dedup_req = dedup;
+    tuplesort_enquire_heap(&dedup);	/* does sort garuntee full dedup? */
+	node->dedup_supp = dedup;
 
 	return node;
 }

@@ -58,6 +58,8 @@ typedef struct Tuplesortstate Tuplesortstate;
  * actually sorted by their hash codes not the raw data.
  */
 
+extern void tuplesort_enquire_heap(bool *dedup);
+
 extern Tuplesortstate *tuplesort_begin_heap(TupleDesc tupDesc,
 					 int nkeys, AttrNumber *attNums,
 					 Oid *sortOperators, Oid *sortCollations,

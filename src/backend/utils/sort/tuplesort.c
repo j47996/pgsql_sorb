@@ -763,12 +763,20 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 	return state;
 }
 
+/* This should grow into a general capabilities enquiry */
+void
+tuplesort_enquire_heap(bool *dedup)
+{
+	if (!optimize_dedup_sort || !enable_intmerge_sort)
+		*dedup = false;
+}
+
 Tuplesortstate *
 tuplesort_begin_heap(TupleDesc tupDesc,
 					 int nkeys, AttrNumber *attNums,
 					 Oid *sortOperators, Oid *sortCollations,
 					 bool *nullsFirstFlags,
-					 int workMem, bool * dedup, bool randomAccess)
+					 int workMem, bool *dedup, bool randomAccess)
 {
 	Tuplesortstate *state = tuplesort_begin_common(workMem, randomAccess);
 	MemoryContext oldcontext;

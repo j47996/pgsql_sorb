@@ -50,6 +50,8 @@
 #include "utils/rel.h"
 #include "utils/selfuncs.h"
 
+extern bool plan_supports_uniq(Plan *plan);
+
 
 typedef struct
 {
@@ -779,7 +781,8 @@ make_union_unique(SetOperationStmt *op, Plan *plan,
 	{
 		/* Sort and Unique */
 		plan = (Plan *) make_sort_from_sortclauses(root, groupList, plan, true);
-		plan = (Plan *) make_unique(plan, groupList);
+        if (!plan_supports_uniq(plan))
+				plan = (Plan *) make_unique(plan, groupList);
 		plan->plan_rows = dNumGroups;
 		/* We know the sort order of the result */
 		*sortClauses = groupList;
