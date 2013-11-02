@@ -40,6 +40,7 @@
 #include "parser/parse_clause.h"
 #include "parser/parsetree.h"
 #include "utils/lsyscache.h"
+#include "utils/tuplesort.h"
 
 
 static Plan *create_plan_recurse(PlannerInfo *root, Path *best_path);
@@ -1066,8 +1067,7 @@ create_unique_plan(PlannerInfo *root, UniquePath *best_path)
 			groupColPos++;
 		}
 		plan = (Plan *) make_sort_from_sortclauses(root, sortList, subplan, true);
-		if (!plan_supports_uniq(plan))
-			plan = (Plan *) make_unique(plan, sortList);
+		plan = (Plan *) make_unique(plan, sortList);
 	}
 
 	/* Adjust output size estimate (other fields should be OK already) */
@@ -3795,7 +3795,7 @@ make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 	node->nullsFirst = nullsFirst;
 
 	node->dedup_req = dedup;
-    tuplesort_enquire_heap(&dedup);	/* does sort garuntee full dedup? */
+    tuplesort_enquire_heap(&dedup);	/* does sort guarantee full dedup? */
 	node->dedup_supp = dedup;
 
 	return node;
@@ -4467,6 +4467,7 @@ make_group(PlannerInfo *root,
 	return node;
 }
 
+bool optimize_unique_node = false;
 /*
  * distinctList is a list of SortGroupClauses, identifying the targetlist items
  * that should be considered by the Unique filter.	The input path must
@@ -4482,6 +4483,12 @@ make_unique(Plan *lefttree, List *distinctList)
 	AttrNumber *uniqColIdx;
 	Oid		   *uniqOperators;
 	ListCell   *slitem;
+
+    if (optimize_unique_node & plan_supports_uniq(lefttree))
+    {
+		/* elog(NOTICE, "%s: elided Unique node", __FUNCTION__); */
+	    return (Unique *)lefttree;
+    }
 
 	copy_plan_costsize(plan, lefttree);
 

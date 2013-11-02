@@ -1889,10 +1889,8 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 															   -1.0);
 			}
 
-			if (!plan_supports_uniq(result_plan))
-				result_plan = (Plan *) make_unique(result_plan,
+		    result_plan = (Plan *) make_unique(result_plan,
 											   parse->distinctClause);
-
 			result_plan->plan_rows = dNumDistinctRows;
 			/* The Unique node won't change sort ordering */
 		}

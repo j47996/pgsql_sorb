@@ -781,8 +781,7 @@ make_union_unique(SetOperationStmt *op, Plan *plan,
 	{
 		/* Sort and Unique */
 		plan = (Plan *) make_sort_from_sortclauses(root, groupList, plan, true);
-        if (!plan_supports_uniq(plan))
-				plan = (Plan *) make_unique(plan, groupList);
+		plan = (Plan *) make_unique(plan, groupList);
 		plan->plan_rows = dNumGroups;
 		/* We know the sort order of the result */
 		*sortClauses = groupList;

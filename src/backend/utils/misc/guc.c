@@ -139,6 +139,7 @@ extern bool optimize_bounded_sort;
 #endif
 extern bool optimize_dedup_sort;
 extern bool enable_intmerge_sort;
+extern bool optimize_unique_node;
 
 static int	GUC_check_errcode_value;
 
@@ -1332,6 +1333,16 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&optimize_dedup_sort,
 		true,
+		NULL, NULL, NULL
+	},
+	{
+		{
+			"optimize_unique_node", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("Elide Unique node when underlying sort does dedup."),
+			NULL
+		},
+		&optimize_unique_node,
+		false,
 		NULL, NULL, NULL
 	},
 

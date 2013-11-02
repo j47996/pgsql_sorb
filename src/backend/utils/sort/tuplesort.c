@@ -2872,14 +2872,20 @@ fmerge:
 				Size		tuplen;
 				int			tupIndex;
 				SortTuple  *newtup;
-				bool checkIndex = true;	/* for HEAPCOMPARE */
+				bool		dup_dropped = false;
 
-				if (state->dedup && state->memtupcount > 1 &&
-					HEAPCOMPARE(&state->memtuples[0],&state->memtuples[1]) == 0)
+				if (  state->dedup
+				   && state->memtupcount > 1
+				   && (  COMPARETUP(state,&state->memtuples[0],&state->memtuples[1]) == 0
+					  || (  state->memtupcount > 2
+						 && (COMPARETUP(state,&state->memtuples[0],&state->memtuples[2]) == 0)
+						 )
+					  )
+				   )
 				{				/* A dup; drop one */
 					FREEMEM(state, GetMemoryChunkSpace(state->memtuples[0].tuple));
 					heap_free_minimal_tuple(state->memtuples[0].tuple);
-					checkIndex = false;
+					dup_dropped = true;
 				}
 				else
 				{
@@ -2919,7 +2925,7 @@ fmerge:
 				newtup->tupindex = state->mergefreelist;
 				state->mergefreelist = tupIndex;
 				state->mergeavailslots[srcTape]++;
-fmerge_done:	if (!checkIndex)
+fmerge_done:	if (dup_dropped)
 					goto fmerge;
 				return true;
 			}
@@ -3356,9 +3362,15 @@ mergeonerun(Tuplesortstate *state)
 	 */
 	while (state->memtupcount > 0)
 	{
-		bool checkIndex = true;	/* for HEAPCOMPARE */
-		if (state->dedup && state->memtupcount > 1 &&
-			HEAPCOMPARE(&state->memtuples[0], &state->memtuples[1]) == 0)
+		srcTape = state->memtuples[0].tupindex;
+		if (  state->dedup
+		   && state->memtupcount > 1
+		   && (  COMPARETUP(state,&state->memtuples[0],&state->memtuples[1]) == 0
+		      || (  state->memtupcount > 2
+			     && (COMPARETUP(state,&state->memtuples[0],&state->memtuples[2]) == 0)
+				 )
+			  )
+		   )
 		{				/* A dup; drop one */
 			FREEMEM(state, GetMemoryChunkSpace(state->memtuples[0].tuple));
 			heap_free_minimal_tuple(state->memtuples[0].tuple);
@@ -3367,7 +3379,6 @@ mergeonerun(Tuplesortstate *state)
 		{
 			/* write the tuple to destTape */
 			priorAvail = state->availMem;
-			srcTape = state->memtuples[0].tupindex;
 			WRITETUP(state, destTape, &state->memtuples[0]);
 			/* writetup adjusted total free space, now fix per-tape space */
 			spaceFreed = state->availMem - priorAvail;
@@ -3612,15 +3623,25 @@ dumptuples(Tuplesortstate *state, bool alltuples)
 		   (LACKMEM(state) && state->memtupcount > 1) ||
 		   state->memtupcount >= state->memtupsize)
 	{
-		bool checkIndex = true;	/* for HEAPCOMPARE */
 		/*
 		 * Dump the heap's frontmost entry, and sift up to remove it from the
 		 * heap.
 		 */
 		Assert(state->memtupcount > 0);
 
-		if (state-> dedup && state->memtupcount > 1 &&
-			HEAPCOMPARE(&state->memtuples[0], &state->memtuples[1]) == 0)
+		/*
+		 * Ugly having to do two compares here. Alternatives would be to
+		 * keep the last-written one to compare against the top, or give
+		 * up on the dedup guaruntee.
+		 */
+		if (  state->dedup
+		   && state->memtupcount > 1
+		   && (  COMPARETUP(state,&state->memtuples[0],&state->memtuples[1]) == 0
+		      || (  state->memtupcount > 2
+			     && (COMPARETUP(state,&state->memtuples[0],&state->memtuples[2]) == 0)
+				 )
+			  )
+		   )
 		{				/* A dup; drop one */
 			FREEMEM(state, GetMemoryChunkSpace(state->memtuples[0].tuple));
 			heap_free_minimal_tuple(state->memtuples[0].tuple);
