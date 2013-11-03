@@ -1067,11 +1067,11 @@ tuplesort_set_bound(Tuplesortstate *state, int64 bound)
 
 	state->bounded = true;
 	state->bound = (int) bound;
-	if( state->status == TSS_INITIAL && enable_intmerge_sort)
+	switch(state->status)
 	{
-		state->status = TSS_SORB;
-		state->boundUsed = true;
-		elog(LOG,"%s: set boundUsed", __FUNCTION__);
+	case TSS_INITIAL:	if (enable_intmerge_sort) state->status = TSS_SORB;
+	case TSS_SORB:		state->boundUsed = true;
+	default:			break;
 	}
 }
 
