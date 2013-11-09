@@ -1850,20 +1850,18 @@ sorb_link_ssup(struct Tuplesortstate * state, int new)
 		 * Merge the run to free hook zero, then place the tuple
 		 * as first in a new run onto it.
 		 */
-{
-int i;
-if(state->runlen < 0) state->runlen= -state->runlen;
-for(i= 1, state->runlen /= 4; state->runlen; state->runlen /= 2) i++;
-/* i is now the hook to merge this run at */
-
-/* note this choice makes the sort non-stable; to maintain stability we could
-   merge all hooks from 1 to at least i first, then place or merge at i. */
-/* Maybe we should have a stability option switch. */
-
 		{
-			int hook;
-			int start = state->runhooks[0];
-			for ( hook = i;
+			int hook, start;
+
+			if(state->runlen < 0) state->runlen= -state->runlen;
+			for(hook= 1, state->runlen /= 4; state->runlen; state->runlen /= 2) hook++;
+/*
+ * "hook" is now the hook to merge this run at.
+ * Note this choice makes the sort non-stable; to maintain stability we could
+ * merge all hooks from 1 to at least i first, then place or merge at i.
+ * Maybe we should have a stability option switch.
+ */
+			for ( start= state->runhooks[0];
 				  state->runhooks[hook] >= 0  &&  hook <= state->maxhook + 1;
 				  hook++ )
 			{
@@ -1882,7 +1880,6 @@ for(i= 1, state->runlen /= 4; state->runlen; state->runlen /= 2) i++;
 			}
 			state->runhooks[hook] = start;
 		}
-}
 	}
 
 	np->next = -1;
