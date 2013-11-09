@@ -130,6 +130,9 @@ set optimize_unique_node to on;
 
 -- external sort
 explain analyze SELECT * FROM jgh ORDER BY i;
+set enable_intmerge_sort to off;
+explain analyze SELECT * FROM jgh ORDER BY i;
+set enable_intmerge_sort to on;
 
 set enable_hashagg to off;
 set work_mem to 163840;
@@ -251,6 +254,7 @@ set enable_hashagg to on;
 explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
 
 
+--
 explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 10;
 
 set enable_hashagg to off;
@@ -264,6 +268,27 @@ explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 10;
 
 set enable_intmerge_sort to off;
 explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 10;
+
+
+set work_mem to 16384;
+set enable_hashagg to on;
+set optimize_dedup_sort to on;
+set enable_intmerge_sort to on;
+set optimize_unique_node to on;
+--
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 500;
+
+set enable_hashagg to off;
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 500;
+
+set optimize_unique_node to off;
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 500;
+
+set optimize_dedup_sort to off;
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 500;
+
+set enable_intmerge_sort to off;
+explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 500;
 
 
 
