@@ -1342,7 +1342,7 @@ static struct config_bool ConfigureNamesBool[] =
 			NULL
 		},
 		&optimize_unique_node,
-		false,
+		true,
 		NULL, NULL, NULL
 	},
 

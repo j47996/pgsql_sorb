@@ -67,8 +67,6 @@ typedef struct
 	List	   *activeWindows;	/* active windows, if any */
 } standard_qp_extra;
 
-extern bool plan_supports_uniq(Plan *plan);
-
 
 /* Local functions */
 static Node *preprocess_expression(PlannerInfo *root, Node *expr, int kind);

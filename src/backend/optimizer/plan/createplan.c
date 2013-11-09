@@ -151,7 +151,6 @@ static MergeJoin *make_mergejoin(List *tlist,
 			   bool *mergenullsfirst,
 			   Plan *lefttree, Plan *righttree,
 			   JoinType jointype);
-       bool plan_supports_uniq(Plan *plan);
 static Sort *make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 		  AttrNumber *sortColIdx, Oid *sortOperators,
 		  Oid *collations, bool *nullsFirst, bool dedup,
@@ -3749,11 +3748,14 @@ make_mergejoin(List *tlist,
 	return node;
 }
 
-bool
-plan_supports_uniq(Plan *plan)
+static inline bool
+plan_supports_uniq(Plan *plan, int *numCols)
 {
     if (plan->type == T_Sort)
+	{
+		*numCols = ((Sort *)plan)->numCols;
         return ((Sort *)plan)->dedup_supp;
+	}
     return false;
 }
 
@@ -4467,7 +4469,7 @@ make_group(PlannerInfo *root,
 	return node;
 }
 
-bool optimize_unique_node = false;
+bool optimize_unique_node = true;
 /*
  * distinctList is a list of SortGroupClauses, identifying the targetlist items
  * that should be considered by the Unique filter.	The input path must
@@ -4479,12 +4481,19 @@ make_unique(Plan *lefttree, List *distinctList)
 	Unique	   *node = makeNode(Unique);
 	Plan	   *plan = &node->plan;
 	int			numCols = list_length(distinctList);
+	int			numSortCols;
 	int			keyno = 0;
 	AttrNumber *uniqColIdx;
 	Oid		   *uniqOperators;
 	ListCell   *slitem;
 
-    if (optimize_unique_node & plan_supports_uniq(lefttree))
+	/*
+	 * If the input node already dedups and its sort criteria are
+	 * no tighter than our distinct criteria, we have no work to do.
+	 */
+    if (optimize_unique_node &&
+		plan_supports_uniq(lefttree, &numSortCols) &&
+		numSortCols == numCols)
     {
 		/* elog(NOTICE, "%s: elided Unique node", __FUNCTION__); */
 	    return (Unique *)lefttree;
@@ -4496,9 +4505,6 @@ make_unique(Plan *lefttree, List *distinctList)
 	 * Charge one cpu_operator_cost per comparison per input tuple. We assume
 	 * all columns get compared at most of the tuples.	(XXX probably this is
 	 * an overestimate.)
-	 * XXX If the input subplan is a sort which is supporting dedup, we could
-	 * skip all the work and charge a zero cost.  Unfortunately at present
-	 * we don't discover this until ExecSort() time; too late for planning.
 	 */
 	plan->total_cost += cpu_operator_cost * plan->plan_rows * numCols;
 

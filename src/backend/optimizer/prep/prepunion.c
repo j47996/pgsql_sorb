@@ -50,8 +50,6 @@
 #include "utils/rel.h"
 #include "utils/selfuncs.h"
 
-extern bool plan_supports_uniq(Plan *plan);
-
 
 typedef struct
 {
