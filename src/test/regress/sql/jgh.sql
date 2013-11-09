@@ -51,6 +51,8 @@ set optimize_dedup_sort to on;
 set enable_intmerge_sort to on;
 set optimize_unique_node to on;
 
+-- 2-col sort
+
 -- external sort
 explain analyze SELECT * FROM jgh ORDER BY s, i;
 
@@ -69,7 +71,40 @@ set enable_intmerge_sort to off;
 explain analyze SELECT * FROM jgh ORDER BY s, i;
 set enable_intmerge_sort to on;
 
+set work_mem to 1024;
+set enable_hashagg to on;
+set optimize_dedup_sort to on;
+set enable_intmerge_sort to on;
+set optimize_unique_node to on;
 
+-- 1-col sort
+
+-- external sort
+explain analyze SELECT * FROM jgh ORDER BY s;
+
+set enable_hashagg to off;
+set work_mem to 16384;
+-- internal merge
+explain analyze SELECT * FROM jgh ORDER BY s;
+set enable_intmerge_sort to off;
+-- internal quicksort
+explain analyze SELECT * FROM jgh ORDER BY s;
+set enable_intmerge_sort to on;
+-- internal merge retry
+explain analyze SELECT * FROM jgh ORDER BY s;
+set enable_intmerge_sort to off;
+-- internal quicksort retry
+explain analyze SELECT * FROM jgh ORDER BY s;
+set enable_intmerge_sort to on;
+
+
+-- sort/unique
+
+set work_mem to 1024;
+set enable_hashagg to on;
+explain analyze SELECT distinct s FROM jgh;
+
+set work_mem to 16384;
 explain analyze SELECT distinct s FROM jgh;
 set enable_hashagg to off;
 explain analyze SELECT distinct s FROM jgh;
