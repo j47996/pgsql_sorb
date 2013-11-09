@@ -41,9 +41,6 @@ DROP TABLE jgh;
 create table jgh (s text, i integer);
 INSERT INTO jgh (s, i) SELECT concat(
 		chr((100*random()+20)::int),
-		chr((100*random()+20)::int),
-		chr((100*random()+20)::int),
-		chr((100*random()+20)::int),
 		chr((100*random()+20)::int)),
 20000 * random() FROM generate_series(1, 20000);
 VACUUM ANALYZE jgh;
