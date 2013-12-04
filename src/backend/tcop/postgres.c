@@ -69,7 +69,6 @@
 #include "tcop/tcopprot.h"
 #include "tcop/utility.h"
 #include "utils/lsyscache.h"
-#include "utils/memdebug.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/snapmgr.h"
@@ -527,16 +526,22 @@ prepare_for_client_read(void)
 
 /*
  * client_read_ended -- get out of the client-input state
+ *
+ * This is called just after low-level reads.  It must preserve errno!
  */
 void
 client_read_ended(void)
 {
 	if (DoingCommandRead)
 	{
+		int			save_errno = errno;
+
 		ImmediateInterruptOK = false;
 
 		DisableNotifyInterrupt();
 		DisableCatchupInterrupt();
+
+		errno = save_errno;
 	}
 }
 
@@ -846,10 +851,6 @@ exec_simple_query(const char *query_string)
 	pgstat_report_activity(STATE_RUNNING, query_string);
 
 	TRACE_POSTGRESQL_QUERY_START(query_string);
-
-#ifdef USE_VALGRIND
-	VALGRIND_PRINTF("statement: %s\n", query_string);
-#endif
 
 	/*
 	 * We use save_log_statement_stats so ShowUsage doesn't report incorrect
@@ -2530,6 +2531,13 @@ quickdie(SIGNAL_ARGS)
 	PG_SETMASK(&BlockSig);
 
 	/*
+	 * Prevent interrupts while exiting; though we just blocked signals that
+	 * would queue new interrupts, one may have been pending.  We don't want a
+	 * quickdie() downgraded to a mere query cancel.
+	 */
+	HOLD_INTERRUPTS();
+
+	/*
 	 * If we're aborting out of client auth, don't risk trying to send
 	 * anything to the client; we will likely violate the protocol, not to
 	 * mention that we may have interrupted the guts of OpenSSL or some
@@ -3795,6 +3803,13 @@ PostgresMain(int argc, char *argv[],
 	 * always active, we have at least some chance of recovering from an error
 	 * during error recovery.  (If we get into an infinite loop thereby, it
 	 * will soon be stopped by overflow of elog.c's internal state stack.)
+	 *
+	 * Note that we use sigsetjmp(..., 1), so that this function's signal mask
+	 * (to wit, UnBlockSig) will be restored when longjmp'ing to here.  This
+	 * is essential in case we longjmp'd out of a signal handler on a platform
+	 * where that leaves the signal blocked.  It's not redundant with the
+	 * unblock in AbortTransaction() because the latter is only called if we
+	 * were inside a transaction.
 	 */
 
 	if (sigsetjmp(local_sigjmp_buf, 1) != 0)
@@ -3815,11 +3830,17 @@ PostgresMain(int argc, char *argv[],
 
 		/*
 		 * Forget any pending QueryCancel request, since we're returning to
-		 * the idle loop anyway, and cancel any active timeout requests.
+		 * the idle loop anyway, and cancel any active timeout requests.  (In
+		 * future we might want to allow some timeout requests to survive, but
+		 * at minimum it'd be necessary to do reschedule_timeouts(), in case
+		 * we got here because of a query cancel interrupting the SIGALRM
+		 * interrupt handler.)	Note in particular that we must clear the
+		 * statement and lock timeout indicators, to prevent any future plain
+		 * query cancels from being misreported as timeouts in case we're
+		 * forgetting a timeout cancel.
 		 */
-		QueryCancelPending = false;
 		disable_all_timeouts(false);
-		QueryCancelPending = false;		/* again in case timeout occurred */
+		QueryCancelPending = false;		/* second to avoid race condition */
 
 		/*
 		 * Turn off these interrupts too.  This is only needed here and not in
@@ -4341,7 +4362,7 @@ ShowUsage(const char *title)
 	 */
 	initStringInfo(&str);
 
-	appendStringInfo(&str, "! system usage stats:\n");
+	appendStringInfoString(&str, "! system usage stats:\n");
 	appendStringInfo(&str,
 				"!\t%ld.%06ld elapsed %ld.%06ld user %ld.%06ld system sec\n",
 					 (long) (elapse_t.tv_sec - Save_t.tv_sec),

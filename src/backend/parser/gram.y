@@ -255,6 +255,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <ival>	add_drop opt_asc_desc opt_nulls_order
 
 %type <node>	alter_table_cmd alter_type_cmd opt_collate_clause
+	   replica_identity
 %type <list>	alter_table_cmds alter_type_cmds
 
 %type <dbehavior>	opt_drop_behavior
@@ -324,8 +325,9 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				reloptions opt_reloptions
 				OptWith opt_distinct opt_definition func_args func_args_list
 				func_args_with_defaults func_args_with_defaults_list
+				aggr_args aggr_args_list
 				func_as createfunc_opt_list alterfunc_opt_list
-				aggr_args old_aggr_definition old_aggr_list
+				old_aggr_definition old_aggr_list
 				oper_argtypes RuleActionList RuleActionMulti
 				opt_column_list columnList opt_name_list
 				sort_clause opt_sort_clause sortby_list index_params
@@ -352,7 +354,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 %type <into>	into_clause create_as_target create_mv_target
 
 %type <defelt>	createfunc_opt_item common_func_opt_item dostmt_opt_item
-%type <fun_param> func_arg func_arg_with_default table_func_column
+%type <fun_param> func_arg func_arg_with_default table_func_column aggr_arg
 %type <fun_param_mode> arg_class
 %type <typnam>	func_return func_type
 
@@ -404,6 +406,8 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 				a_expr b_expr c_expr AexprConst indirection_el
 				columnref in_expr having_clause func_table array_expr
 				ExclusionWhereClause
+%type <list>	func_table_item func_table_list opt_col_def_list
+%type <boolean> opt_ordinality
 %type <list>	ExclusionConstraintList ExclusionConstraintElem
 %type <list>	func_arg_list
 %type <node>	func_arg_expr
@@ -610,6 +614,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
  * creates these tokens when required.
  */
 %token			NULLS_FIRST NULLS_LAST WITH_ORDINALITY WITH_TIME
+
 
 /* Precedence: lowest to highest */
 %nonassoc	SET				/* see relation_expr_opt_alias */
@@ -1449,10 +1454,7 @@ set_rest_more:	/* Generic SET syntaxes: */
 
 var_name:	ColId								{ $$ = $1; }
 			| var_name '.' ColId
-				{
-					$$ = palloc(strlen($1) + strlen($3) + 2);
-					sprintf($$, "%s.%s", $1, $3);
-				}
+				{ $$ = psprintf("%s.%s", $1, $3); }
 		;
 
 var_list:	var_value								{ $$ = list_make1($1); }
@@ -1673,7 +1675,7 @@ CheckPointStmt:
 
 /*****************************************************************************
  *
- * DISCARD { ALL | TEMP | PLANS }
+ * DISCARD { ALL | TEMP | PLANS | SEQUENCES }
  *
  *****************************************************************************/
 
@@ -1702,6 +1704,13 @@ DiscardStmt:
 					n->target = DISCARD_PLANS;
 					$$ = (Node *) n;
 				}
+			| DISCARD SEQUENCES
+				{
+					DiscardStmt *n = makeNode(DiscardStmt);
+					n->target = DISCARD_SEQUENCES;
+					$$ = (Node *) n;
+				}
+
 		;
 
 
@@ -1920,10 +1929,11 @@ alter_table_cmd:
 					n->subtype = AT_AlterColumnType;
 					n->name = $3;
 					n->def = (Node *) def;
-					/* We only use these three fields of the ColumnDef node */
+					/* We only use these fields of the ColumnDef node */
 					def->typeName = $6;
 					def->collClause = (CollateClause *) $7;
 					def->raw_default = $8;
+					def->location = @3;
 					$$ = (Node *)n;
 				}
 			/* ALTER FOREIGN TABLE <name> ALTER [COLUMN] <colname> OPTIONS */
@@ -2173,6 +2183,14 @@ alter_table_cmd:
 					n->def = (Node *)$2;
 					$$ = (Node *)n;
 				}
+			/* ALTER TABLE <name> REPLICA IDENTITY  */
+			| REPLICA IDENTITY_P replica_identity
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_ReplicaIdentity;
+					n->def = $3;
+					$$ = (Node *)n;
+				}
 			| alter_generic_options
 				{
 					AlterTableCmd *n = makeNode(AlterTableCmd);
@@ -2209,6 +2227,37 @@ alter_using:
 			USING a_expr				{ $$ = $2; }
 			| /* EMPTY */				{ $$ = NULL; }
 		;
+
+replica_identity:
+			NOTHING
+				{
+					ReplicaIdentityStmt *n = makeNode(ReplicaIdentityStmt);
+					n->identity_type = REPLICA_IDENTITY_NOTHING;
+					n->name = NULL;
+					$$ = (Node *) n;
+				}
+			| FULL
+				{
+					ReplicaIdentityStmt *n = makeNode(ReplicaIdentityStmt);
+					n->identity_type = REPLICA_IDENTITY_FULL;
+					n->name = NULL;
+					$$ = (Node *) n;
+				}
+			| DEFAULT
+				{
+					ReplicaIdentityStmt *n = makeNode(ReplicaIdentityStmt);
+					n->identity_type = REPLICA_IDENTITY_DEFAULT;
+					n->name = NULL;
+					$$ = (Node *) n;
+				}
+			| USING INDEX name
+				{
+					ReplicaIdentityStmt *n = makeNode(ReplicaIdentityStmt);
+					n->identity_type = REPLICA_IDENTITY_INDEX;
+					n->name = $3;
+					$$ = (Node *) n;
+				}
+;
 
 reloptions:
 			'(' reloption_list ')'					{ $$ = $2; }
@@ -2309,10 +2358,11 @@ alter_type_cmd:
 					n->name = $3;
 					n->def = (Node *) def;
 					n->behavior = $8;
-					/* We only use these three fields of the ColumnDef node */
+					/* We only use these fields of the ColumnDef node */
 					def->typeName = $6;
 					def->collClause = (CollateClause *) $7;
 					def->raw_default = NULL;
+					def->location = @3;
 					$$ = (Node *)n;
 				}
 		;
@@ -2737,6 +2787,7 @@ columnDef:	ColId Typename create_generic_options ColQualList
 					n->fdwoptions = $3;
 					SplitColQualList($4, &n->constraints, &n->collClause,
 									 yyscanner);
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 		;
@@ -2756,6 +2807,7 @@ columnOptions:	ColId WITH OPTIONS ColQualList
 					n->collOid = InvalidOid;
 					SplitColQualList($4, &n->constraints, &n->collClause,
 									 yyscanner);
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 		;
@@ -3659,7 +3711,7 @@ AlterExtensionContentsStmt:
 					n->action = $4;
 					n->objtype = OBJECT_AGGREGATE;
 					n->objname = $6;
-					n->objargs = $7;
+					n->objargs = extractArgTypes($7);
 					$$ = (Node *)n;
 				}
 			| ALTER EXTENSION name add_drop CAST '(' Typename AS Typename ')'
@@ -3929,7 +3981,7 @@ DropFdwStmt: DROP FOREIGN DATA_P WRAPPER name opt_drop_behavior
 					$$ = (Node *) n;
 				}
 				|  DROP FOREIGN DATA_P WRAPPER IF_P EXISTS name opt_drop_behavior
-                {
+				{
 					DropStmt *n = makeNode(DropStmt);
 					n->removeType = OBJECT_FDW;
 					n->objects = list_make1(list_make1(makeString($7)));
@@ -4091,7 +4143,7 @@ DropForeignServerStmt: DROP SERVER name opt_drop_behavior
 					$$ = (Node *) n;
 				}
 				|  DROP SERVER IF_P EXISTS name opt_drop_behavior
-                {
+				{
 					DropStmt *n = makeNode(DropStmt);
 					n->removeType = OBJECT_FOREIGN_SERVER;
 					n->objects = list_make1(list_make1(makeString($5)));
@@ -4760,10 +4812,6 @@ def_arg:	func_type						{ $$ = (Node *)$1; }
 			| Sconst						{ $$ = (Node *)makeString($1); }
 		;
 
-aggr_args:	'(' type_list ')'						{ $$ = $2; }
-			| '(' '*' ')'							{ $$ = NIL; }
-		;
-
 old_aggr_definition: '(' old_aggr_list ')'			{ $$ = $2; }
 		;
 
@@ -4833,8 +4881,8 @@ AlterEnumStmt:
 		 ;
 
 opt_if_not_exists: IF_P NOT EXISTS              { $$ = true; }
-         | /* empty */                          { $$ = false; }
-         ;
+		| /* empty */                          { $$ = false; }
+		;
 
 
 /*****************************************************************************
@@ -5242,7 +5290,7 @@ CommentStmt:
 					CommentStmt *n = makeNode(CommentStmt);
 					n->objtype = OBJECT_AGGREGATE;
 					n->objname = $4;
-					n->objargs = $5;
+					n->objargs = extractArgTypes($5);
 					n->comment = $7;
 					$$ = (Node *) n;
 				}
@@ -5408,7 +5456,7 @@ SecLabelStmt:
 					n->provider = $3;
 					n->objtype = OBJECT_AGGREGATE;
 					n->objname = $6;
-					n->objargs = $7;
+					n->objargs = extractArgTypes($7);
 					n->label = $9;
 					$$ = (Node *) n;
 				}
@@ -6395,6 +6443,28 @@ func_arg_with_default:
 				}
 		;
 
+/* Aggregate args can be most things that function args can be */
+aggr_arg:	func_arg
+				{
+					if (!($1->mode == FUNC_PARAM_IN ||
+						  $1->mode == FUNC_PARAM_VARIADIC))
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("aggregates cannot have output arguments"),
+								 parser_errposition(@1)));
+					$$ = $1;
+				}
+		;
+
+/* Zero-argument aggregates are named with * for consistency with COUNT(*) */
+aggr_args:	'(' aggr_args_list ')'					{ $$ = $2; }
+			| '(' '*' ')'							{ $$ = NIL; }
+		;
+
+aggr_args_list:
+			aggr_arg								{ $$ = list_make1($1); }
+			| aggr_args_list ',' aggr_arg			{ $$ = lappend($1, $3); }
+		;
 
 createfunc_opt_list:
 			/* Must be at least one to prevent conflict */
@@ -6594,7 +6664,7 @@ RemoveAggrStmt:
 					DropStmt *n = makeNode(DropStmt);
 					n->removeType = OBJECT_AGGREGATE;
 					n->objects = list_make1($3);
-					n->arguments = list_make1($4);
+					n->arguments = list_make1(extractArgTypes($4));
 					n->behavior = $5;
 					n->missing_ok = false;
 					n->concurrent = false;
@@ -6605,7 +6675,7 @@ RemoveAggrStmt:
 					DropStmt *n = makeNode(DropStmt);
 					n->removeType = OBJECT_AGGREGATE;
 					n->objects = list_make1($5);
-					n->arguments = list_make1($6);
+					n->arguments = list_make1(extractArgTypes($6));
 					n->behavior = $7;
 					n->missing_ok = true;
 					n->concurrent = false;
@@ -6821,7 +6891,7 @@ RenameStmt: ALTER AGGREGATE func_name aggr_args RENAME TO name
 					RenameStmt *n = makeNode(RenameStmt);
 					n->renameType = OBJECT_AGGREGATE;
 					n->object = $3;
-					n->objarg = $4;
+					n->objarg = extractArgTypes($4);
 					n->newname = $7;
 					n->missing_ok = false;
 					$$ = (Node *)n;
@@ -7295,7 +7365,7 @@ AlterObjectSchemaStmt:
 					AlterObjectSchemaStmt *n = makeNode(AlterObjectSchemaStmt);
 					n->objectType = OBJECT_AGGREGATE;
 					n->object = $3;
-					n->objarg = $4;
+					n->objarg = extractArgTypes($4);
 					n->newschema = $7;
 					n->missing_ok = false;
 					$$ = (Node *)n;
@@ -7524,7 +7594,7 @@ AlterOwnerStmt: ALTER AGGREGATE func_name aggr_args OWNER TO RoleId
 					AlterOwnerStmt *n = makeNode(AlterOwnerStmt);
 					n->objectType = OBJECT_AGGREGATE;
 					n->object = $3;
-					n->objarg = $4;
+					n->objarg = extractArgTypes($4);
 					n->newowner = $7;
 					$$ = (Node *)n;
 				}
@@ -9585,42 +9655,17 @@ table_ref:	relation_expr opt_alias_clause
 				}
 			| func_table func_alias_clause
 				{
-					RangeFunction *n = makeNode(RangeFunction);
-					n->lateral = false;
-					n->ordinality = false;
-					n->funccallnode = $1;
+					RangeFunction *n = (RangeFunction *) $1;
 					n->alias = linitial($2);
 					n->coldeflist = lsecond($2);
 					$$ = (Node *) n;
 				}
-			| func_table WITH_ORDINALITY func_alias_clause
-				{
-					RangeFunction *n = makeNode(RangeFunction);
-					n->lateral = false;
-					n->ordinality = true;
-					n->funccallnode = $1;
-					n->alias = linitial($3);
-					n->coldeflist = lsecond($3);
-					$$ = (Node *) n;
-				}
 			| LATERAL_P func_table func_alias_clause
 				{
-					RangeFunction *n = makeNode(RangeFunction);
+					RangeFunction *n = (RangeFunction *) $2;
 					n->lateral = true;
-					n->ordinality = false;
-					n->funccallnode = $2;
 					n->alias = linitial($3);
 					n->coldeflist = lsecond($3);
-					$$ = (Node *) n;
-				}
-			| LATERAL_P func_table WITH_ORDINALITY func_alias_clause
-				{
-					RangeFunction *n = makeNode(RangeFunction);
-					n->lateral = true;
-					n->ordinality = true;
-					n->funccallnode = $2;
-					n->alias = linitial($4);
-					n->coldeflist = lsecond($4);
 					$$ = (Node *) n;
 				}
 			| select_with_parens opt_alias_clause
@@ -9933,7 +9978,54 @@ relation_expr_opt_alias: relation_expr					%prec UMINUS
 				}
 		;
 
-func_table: func_expr_windowless					{ $$ = $1; }
+/*
+ * func_table represents a function invocation in a FROM list. It can be
+ * a plain function call, like "foo(...)", or a TABLE expression with
+ * one or more function calls, "TABLE (foo(...), bar(...))",
+ * optionally with WITH ORDINALITY attached.
+ * In the TABLE syntax, a column definition list can be given for each
+ * function, for example:
+ *     TABLE (foo() AS (foo_res_a text, foo_res_b text),
+ *            bar() AS (bar_res_a text, bar_res_b text))
+ * It's also possible to attach a column definition list to the RangeFunction
+ * as a whole, but that's handled by the table_ref production.
+ */
+func_table: func_expr_windowless opt_ordinality
+				{
+					RangeFunction *n = makeNode(RangeFunction);
+					n->lateral = false;
+					n->ordinality = $2;
+					n->is_table = false;
+					n->functions = list_make1(list_make2($1, NIL));
+					/* alias and coldeflist are set by table_ref production */
+					$$ = (Node *) n;
+				}
+			| TABLE '(' func_table_list ')' opt_ordinality
+				{
+					RangeFunction *n = makeNode(RangeFunction);
+					n->lateral = false;
+					n->ordinality = $5;
+					n->is_table = true;
+					n->functions = $3;
+					/* alias and coldeflist are set by table_ref production */
+					$$ = (Node *) n;
+				}
+		;
+
+func_table_item: func_expr_windowless opt_col_def_list
+				{ $$ = list_make2($1, $2); }
+		;
+
+func_table_list: func_table_item					{ $$ = list_make1($1); }
+			| func_table_list ',' func_table_item	{ $$ = lappend($1, $3); }
+		;
+
+opt_col_def_list: AS '(' TableFuncElementList ')'	{ $$ = $3; }
+			| /*EMPTY*/								{ $$ = NIL; }
+		;
+
+opt_ordinality: WITH_ORDINALITY						{ $$ = true; }
+			| /*EMPTY*/								{ $$ = false; }
 		;
 
 
@@ -9988,6 +10080,7 @@ TableFuncElement:	ColId Typename opt_collate_clause
 					n->collClause = (CollateClause *) $3;
 					n->collOid = InvalidOid;
 					n->constraints = NIL;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 		;
@@ -10301,15 +10394,7 @@ ConstCharacter:  CharacterWithLength
 CharacterWithLength:  character '(' Iconst ')' opt_charset
 				{
 					if (($5 != NULL) && (strcmp($5, "sql_text") != 0))
-					{
-						char *type;
-
-						type = palloc(strlen($1) + 1 + strlen($5) + 1);
-						strcpy(type, $1);
-						strcat(type, "_");
-						strcat(type, $5);
-						$1 = type;
-					}
+						$1 = psprintf("%s_%s", $1, $5);
 
 					$$ = SystemTypeName($1);
 					$$->typmods = list_make1(makeIntConst($3, @3));
@@ -10320,15 +10405,7 @@ CharacterWithLength:  character '(' Iconst ')' opt_charset
 CharacterWithoutLength:	 character opt_charset
 				{
 					if (($2 != NULL) && (strcmp($2, "sql_text") != 0))
-					{
-						char *type;
-
-						type = palloc(strlen($1) + 1 + strlen($2) + 1);
-						strcpy(type, $1);
-						strcat(type, "_");
-						strcat(type, $2);
-						$1 = type;
-					}
+						$1 = psprintf("%s_%s", $1, $2);
 
 					$$ = SystemTypeName($1);
 
@@ -11121,44 +11198,44 @@ func_application: func_name '(' ')'
 					n->agg_star = TRUE;
 					$$ = (Node *)n;
 				}
-        ;
+		;
 
 
 /*
- * func_expr and its cousin func_expr_windowless is split out from c_expr just 
- * so that we have classifications for "everything that is a function call or 
- * looks like one".  This isn't very important, but it saves us having to document 
- * which variants are legal in the backwards-compatible functional-index syntax 
- * for CREATE INDEX.
+ * func_expr and its cousin func_expr_windowless are split out from c_expr just
+ * so that we have classifications for "everything that is a function call or
+ * looks like one".  This isn't very important, but it saves us having to
+ * document which variants are legal in places like "FROM function()" or the
+ * backwards-compatible functional-index syntax for CREATE INDEX.
  * (Note that many of the special SQL functions wouldn't actually make any
  * sense as functional index entries, but we ignore that consideration here.)
  */
-func_expr: func_application filter_clause over_clause 
+func_expr: func_application filter_clause over_clause
 				{
-              		FuncCall *n = (FuncCall*)$1;
+					FuncCall *n = (FuncCall*)$1;
 					n->agg_filter = $2;
 					n->over = $3;
 					$$ = (Node*)n;
-				} 
+				}
 			| func_expr_common_subexpr
 				{ $$ = $1; }
 		;
 
-/* 
+/*
  * As func_expr but does not accept WINDOW functions directly (they
  * can still be contained in arguments for functions etc.)
- * Use this when window expressions are not allowed, so to disambiguate 
+ * Use this when window expressions are not allowed, so to disambiguate
  * the grammar. (e.g. in CREATE INDEX)
  */
-func_expr_windowless: 
+func_expr_windowless:
 			func_application						{ $$ = $1; }
-			| func_expr_common_subexpr 				{ $$ = $1; }
+			| func_expr_common_subexpr				{ $$ = $1; }
 		;
 
 /*
- * Special expression 
+ * Special expression
  */
-func_expr_common_subexpr:	
+func_expr_common_subexpr:
 			COLLATION FOR '(' a_expr ')'
 				{
 					$$ = (Node *) makeFuncCall(SystemFuncName("pg_collation_for"),
@@ -11339,8 +11416,8 @@ func_expr_common_subexpr:
 					 * at the moment they result in the same thing.
 					 */
 					$$ = (Node *) makeFuncCall(SystemFuncName(((Value *)llast($5->names))->val.str),
-											    list_make1($3),
-											    @1);
+												list_make1($3),
+												@1);
 				}
 			| TRIM '(' BOTH trim_list ')'
 				{
@@ -11549,9 +11626,9 @@ window_definition:
 		;
 
 filter_clause:
-             FILTER '(' WHERE a_expr ')'            { $$ = $4; }
-             | /*EMPTY*/                            { $$ = NULL; }
-         ;
+			FILTER '(' WHERE a_expr ')'				{ $$ = $4; }
+			| /*EMPTY*/								{ $$ = NULL; }
+		;
 
 over_clause: OVER window_specification
 				{ $$ = $2; }
@@ -13313,13 +13390,7 @@ doNegateFloat(Value *v)
 	if (*oldval == '-')
 		v->val.str = oldval+1;	/* just strip the '-' */
 	else
-	{
-		char   *newval = (char *) palloc(strlen(oldval) + 2);
-
-		*newval = '-';
-		strcpy(newval+1, oldval);
-		v->val.str = newval;
-	}
+		v->val.str = psprintf("-%s", oldval);
 }
 
 static Node *
