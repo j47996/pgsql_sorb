@@ -304,6 +304,7 @@ typedef struct SortTuple
  */
 typedef enum
 {
+	TSS_SORB_INIT,
 	TSS_SORB,					/* Loading tuples using alternate internal sort; */
 								/*  still within memory limit                    */
 	TSS_INITIAL,				/* Loading tuples; still within memory limit */
@@ -719,7 +720,7 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 #endif
 
 	if (enable_intmerge_sort)
-	{ /* Go to TSS_SORB if dedup or bounded; to TSS_SORB_ONESHOT if input ends early */
+	{ /* Go to TSS_SORB_INIT if dedup or bounded; to TSS_SORB_ONESHOT if input ends early */
 		int * hp;
 		for(hp = state->runhooks; hp < state->runhooks + NHOOKS; hp++)
 			*hp = -1;
@@ -796,7 +797,7 @@ tuplesort_begin_heap(TupleDesc tupDesc,
 
 	state->nKeys = nkeys;
 	if ((state->dedup = *dedup && optimize_dedup_sort) && enable_intmerge_sort)
-		state->status = TSS_SORB;
+		state->status = TSS_SORB_INIT;
 	else
 		*dedup = false;
 
@@ -1051,7 +1052,7 @@ void
 tuplesort_set_bound(Tuplesortstate *state, int64 bound)
 {
 	/* Assert we're called before loading any tuples */
-	Assert(state->status == TSS_INITIAL || state->status == TSS_SORB);
+	Assert(state->status == TSS_INITIAL || state->status == TSS_SORB_INIT);
 	Assert(state->memtupcount == 0);
 	Assert(!state->bounded);
 
@@ -1069,8 +1070,8 @@ tuplesort_set_bound(Tuplesortstate *state, int64 bound)
 	state->bound = (int) bound;
 	switch(state->status)
 	{
-	case TSS_INITIAL:	if (enable_intmerge_sort) state->status = TSS_SORB;
-	case TSS_SORB:		state->boundUsed = true;
+	case TSS_INITIAL:	if (enable_intmerge_sort) state->status = TSS_SORB_INIT;
+	case TSS_SORB_INIT:	state->boundUsed = true;
 	default:			break;
 	}
 }
@@ -1614,135 +1615,133 @@ sorb_link_ssup(struct Tuplesortstate * state, int new)
 
 	np->prev = -1;
 
-	if ( head >= 0 )
-	{	/* not 1st ever tuple */
-		op = &memtuples[head];
+	Assert( head >= 0 );	/* not 1st ever tuple */
+	op = &memtuples[head];
 
-		CHECK_FOR_INTERRUPTS();
-		if( op->next == -1 )
-		{	/* 2nd in run; establishes run direction */
-			cmp = cmp_ssup(op, np, onlyKey);
-			if( state->dedup  &&  cmp == 0 )
-				goto drop;					/* A duplicate; drop the new one */
-			else if( (cmp <= 0) )
-			{	/* Non-descending order run */
-				if( 1 == bound )
-					goto drop;				/* run already as long as required; drop the new one */
-				else
-				{
-					state->runlen = 2;
-					np->next = -1;
-					op->next = state->list_end = new;
-				}
-			}
-			else /* Descending-order run */
-			{
-				if( 1 == state->bound )
-				{	/* run already as long as required; drop the head one */
-					CHECK_FOR_INTERRUPTS();
-					free_sort_tuple(state, op);
-					op->tuple = np->tuple;
-					op->datum1 = np->datum1;
-					op->isnull1 = np->isnull1;
-					np->next = state->mergefreelist;
-					state->mergefreelist = new;
-				}
-				else
-				{
-					state->runlen = -2;
-					np->next = head;
-					state->runhooks[0] = new;
-					op->prev = new;
-				}
-			}
-			return;	/* 2-element list is on hook 0 */
-		}
-
-		/* run direction established */
-		if( state->runlen > 0 )
+	CHECK_FOR_INTERRUPTS();
+	if( op->next == -1 )
+	{	/* 2nd in run; establishes run direction */
+		cmp = cmp_ssup(op, np, onlyKey);
+		if( state->dedup  &&  cmp == 0 )
+			goto drop;					/* A duplicate; drop the new one */
+		else if( (cmp <= 0) )
 		{	/* Non-descending order run */
-			end = state->list_end;
-			op = &memtuples[end];
-			cmp = cmp_ssup(op, np, onlyKey);
-			if( state->dedup  &&  cmp == 0 )
-				goto drop;					/* A duplicate; drop the new one */
-			else if( (cmp <= 0) )
-			{	/* new tuple extends run */
-				if( state->runlen >= bound )
-					goto drop;				/* run already as long as required; drop the new one */
-				else
-				{							/* append the new one */
-					++state->runlen;
-					np->next = -1;
-					op->next = state->list_end = new;
-				}
-				return;	/* >=2 element list, on hook 0 */
+			if( 1 == bound )
+				goto drop;				/* run already as long as required; drop the new one */
+			else
+			{
+				state->runlen = 2;
+				np->next = -1;
+				op->next = state->list_end = new;
 			}
 		}
-		else
-		{	/* Descending-order run */
-			cmp = cmp_ssup(op, np, onlyKey);
-			if( state->dedup  &&  cmp == 0 )
-				goto drop;					/* A duplicate; drop the new one */
-			else if( (cmp > 0) )
-			{	/* new tuple extends run */
-				if( -state->runlen >= bound )
-				{	/* run already as long as required; drop the largest one & keep the new */
-					SortTuple *ep;
-					end = state->list_end;
-					ep = &memtuples[end];
-					CHECK_FOR_INTERRUPTS();
-					free_sort_tuple(state, ep);
-					ep->next = state->mergefreelist;
-					state->mergefreelist = end;
-					state->list_end = end = ep->prev;
-					ep->next = -1;
-				}
-				else
-					--state->runlen;
-											/* prepend the new one */
+		else /* Descending-order run */
+		{
+			if( 1 == state->bound )
+			{	/* run already as long as required; drop the head one */
+				CHECK_FOR_INTERRUPTS();
+				free_sort_tuple(state, op);
+				op->tuple = np->tuple;
+				op->datum1 = np->datum1;
+				op->isnull1 = np->isnull1;
+				np->next = state->mergefreelist;
+				state->mergefreelist = new;
+			}
+			else
+			{
+				state->runlen = -2;
 				np->next = head;
 				state->runhooks[0] = new;
 				op->prev = new;
-				return;	/* >=2 element list, on hook 0 */
 			}
 		}
+		return;	/* 2-element list is on hook 0 */
+	}
 
-		/*
-		 * The new tuple breaks the current run.
-		 * Merge the run to free hook zero, then place the tuple
-		 * as first in a new run onto it.
-		 */
-		{
-			int hook, start;
+	/* run direction established */
+	if( state->runlen > 0 )
+	{	/* Non-descending order run */
+		end = state->list_end;
+		op = &memtuples[end];
+		cmp = cmp_ssup(op, np, onlyKey);
+		if( state->dedup  &&  cmp == 0 )
+			goto drop;					/* A duplicate; drop the new one */
+		else if( (cmp <= 0) )
+		{	/* new tuple extends run */
+			if( state->runlen >= bound )
+				goto drop;				/* run already as long as required; drop the new one */
+			else
+			{							/* append the new one */
+				++state->runlen;
+				np->next = -1;
+				op->next = state->list_end = new;
+			}
+			return;	/* >=2 element list, on hook 0 */
+		}
+	}
+	else
+	{	/* Descending-order run */
+		cmp = cmp_ssup(op, np, onlyKey);
+		if( state->dedup  &&  cmp == 0 )
+			goto drop;					/* A duplicate; drop the new one */
+		else if( (cmp > 0) )
+		{	/* new tuple extends run */
+			if( -state->runlen >= bound )
+			{	/* run already as long as required; drop the largest one & keep the new */
+				SortTuple *ep;
+				end = state->list_end;
+				ep = &memtuples[end];
+				CHECK_FOR_INTERRUPTS();
+				free_sort_tuple(state, ep);
+				ep->next = state->mergefreelist;
+				state->mergefreelist = end;
+				state->list_end = end = ep->prev;
+				ep->next = -1;
+			}
+			else
+				--state->runlen;
+										/* prepend the new one */
+			np->next = head;
+			state->runhooks[0] = new;
+			op->prev = new;
+			return;	/* >=2 element list, on hook 0 */
+		}
+	}
 
-			if(state->runlen < 0) state->runlen= -state->runlen;
-			for(hook= 1, state->runlen /= 4; state->runlen; state->runlen /= 2) hook++;
+	/*
+	 * The new tuple breaks the current run.
+	 * Merge the run to free hook zero, then place the tuple
+	 * as first in a new run onto it.
+	 */
+	{
+		int hook, start;
+
+		if(state->runlen < 0) state->runlen= -state->runlen;
+		for(hook= 1, state->runlen /= 4; state->runlen; state->runlen /= 2) hook++;
 /*
- * "hook" is now the hook to merge this run at.
- * Note this choice makes the sort non-stable; to maintain stability we could
- * merge all hooks from 1 to at least i first, then place or merge at i.
- * Maybe we should have a stability option switch.
- */
-			for ( start= state->runhooks[0];
-				  state->runhooks[hook] >= 0  &&  hook <= state->maxhook + 1;
-				  hook++ )
-			{
-				start = sorb_merge_ssup(state,
-										state->runhooks[hook], start, false);
-				state->runhooks[hook] = -1;
-			}
-			/* all hooks up to "hook" now free; use top one for exp schedule */
-			/* or lower to save memory for bounded case */
-			if( hook > state->maxhook )
-			{
-				if ( state->bounded  &&  1<<hook > state->bound - state->bound/4 )
-					--hook;
-				else
-					state->maxhook = hook;
-			}
-			state->runhooks[hook] = start;
+* "hook" is now the hook to merge this run at.
+* Note this choice makes the sort non-stable; to maintain stability we could
+* merge all hooks from 1 to at least i first, then place or merge at i.
+* Maybe we should have a stability option switch.
+*/
+		for ( start= state->runhooks[0];
+			  state->runhooks[hook] >= 0  &&  hook <= state->maxhook + 1;
+			  hook++ )
+		{
+			start = sorb_merge_ssup(state,
+									state->runhooks[hook], start, false);
+			state->runhooks[hook] = -1;
 		}
+		/* all hooks up to "hook" now free; use top one for exp schedule */
+		/* or lower to save memory for bounded case */
+		if( hook > state->maxhook )
+		{
+			if ( state->bounded  &&  1<<hook > state->bound - state->bound/4 )
+				--hook;
+			else
+				state->maxhook = hook;
+		}
+		state->runhooks[hook] = start;
 	}
 
 	np->next = -1;
@@ -1768,121 +1767,119 @@ sorb_link(struct Tuplesortstate * state, int new)
 
 	memtuples[new].prev = -1;
 
-	if ( head >= 0 )
-	{	/* not 1st ever tuple */
+	Assert( head >= 0 ); /* not 1st ever tuple */
 
-		CHECK_FOR_INTERRUPTS();
-		if( memtuples[head].next == -1 )
-		{	/* 2nd in run; establishes run direction */
-			cmp = COMPARETUP(state, &memtuples[head], &memtuples[new]);
-			if( state->dedup  &&  cmp == 0 )
-				goto drop;					/* A duplicate; drop the new one */
-			else if( (cmp <= 0) )
-			{	/* Non-descending order run */
-				state->runlen = 1;
-				if( 1 == bound )
-					goto drop;				/* run already longer than required; drop the new one */
-				else
-				{
-					memtuples[new].next = -1;
-					memtuples[head].next = state->list_end = new;
-				}
-			}
-			else /* Descending-order run */
-			{
-				if( 1 == state->bound )
-				{	/* run already longer than required; drop the head one */
-					CHECK_FOR_INTERRUPTS();
-					free_sort_tuple(state, &memtuples[head]);
-					memtuples[head].tuple = memtuples[new].tuple;
-					memtuples[head].datum1 = memtuples[new].datum1;
-					memtuples[head].isnull1 = memtuples[new].isnull1;
-					memtuples[new].next = state->mergefreelist;
-					state->mergefreelist = new;
-				}
-				else
-				{
-					state->runlen = -1;
-					memtuples[new].next = head;
-					state->runhooks[0] = new;
-					memtuples[head].prev = new;
-				}
-			}
-			return;	/* 2-element list is on hook 0 */
-		}
-
-		/* run direction established */
-		if( state->runlen > 0 )
+	CHECK_FOR_INTERRUPTS();
+	if( memtuples[head].next == -1 )
+	{	/* 2nd in run; establishes run direction */
+		cmp = COMPARETUP(state, &memtuples[head], &memtuples[new]);
+		if( state->dedup  &&  cmp == 0 )
+			goto drop;					/* A duplicate; drop the new one */
+		else if( (cmp <= 0) )
 		{	/* Non-descending order run */
-			end = state->list_end;
-			cmp = COMPARETUP(state, &memtuples[end], &memtuples[new]);
-			if( state->dedup  &&  cmp == 0 )
-				goto drop;					/* A duplicate; drop the new one */
-			else if( (cmp <= 0) )
-			{	/* new tuple extends run */
-				if( state->runlen >= bound )
-					goto drop;				/* run now longer than required; drop the new one */
-				else
-				{
-					++state->runlen;
-					memtuples[new].next = -1;
-					memtuples[end].next = state->list_end = new;
-				}
-				return;	/* >=2 element list, on hook 0 */
+			state->runlen = 1;
+			if( 1 == bound )
+				goto drop;				/* run already longer than required; drop the new one */
+			else
+			{
+				memtuples[new].next = -1;
+				memtuples[head].next = state->list_end = new;
 			}
 		}
-		else
-		{	/* Descending-order run */
-			cmp = COMPARETUP(state, &memtuples[head], &memtuples[new]);
-			if( state->dedup  &&  cmp == 0 )
-				goto drop;					/* A duplicate; drop the new one */
-			else if( (cmp > 0) )
-			{	/* new tuple extends run */
-				if( -state->runlen >= bound )
-				{	/* run now longer than required; drop the largest one */
-					end = state->list_end;
-					free_sort_tuple(state, &memtuples[end]);
-					memtuples[end].next = state->mergefreelist;
-					state->mergefreelist = end;
-					state->list_end = end = memtuples[end].prev;
-					memtuples[end].next = -1;
-				}
-				else
-					--state->runlen;
-
+		else /* Descending-order run */
+		{
+			if( 1 == state->bound )
+			{	/* run already longer than required; drop the head one */
+				CHECK_FOR_INTERRUPTS();
+				free_sort_tuple(state, &memtuples[head]);
+				memtuples[head].tuple = memtuples[new].tuple;
+				memtuples[head].datum1 = memtuples[new].datum1;
+				memtuples[head].isnull1 = memtuples[new].isnull1;
+				memtuples[new].next = state->mergefreelist;
+				state->mergefreelist = new;
+			}
+			else
+			{
+				state->runlen = -1;
 				memtuples[new].next = head;
 				state->runhooks[0] = new;
 				memtuples[head].prev = new;
-				return;	/* >=2 element list, on hook 0 */
 			}
 		}
+		return;	/* 2-element list is on hook 0 */
+	}
 
-		/*
-		 * The new tuple breaks the current run.
-		 * Merge the run to free hook zero, then place the tuple
-		 * as first in a new run onto it.
-		 */
-		{
-			int hook;
-			int start = state->runhooks[0];
-			for ( hook = 1;
-				  state->runhooks[hook] >= 0  &&  hook <= state->maxhook + 1;
-				  hook++ )
+	/* run direction established */
+	if( state->runlen > 0 )
+	{	/* Non-descending order run */
+		end = state->list_end;
+		cmp = COMPARETUP(state, &memtuples[end], &memtuples[new]);
+		if( state->dedup  &&  cmp == 0 )
+			goto drop;					/* A duplicate; drop the new one */
+		else if( (cmp <= 0) )
+		{	/* new tuple extends run */
+			if( state->runlen >= bound )
+				goto drop;				/* run now longer than required; drop the new one */
+			else
 			{
-				start = sorb_merge(state, state->runhooks[hook], start, false);
-				state->runhooks[hook] = -1;
+				++state->runlen;
+				memtuples[new].next = -1;
+				memtuples[end].next = state->list_end = new;
 			}
-			/* all hooks up to "hook" now free; use top one for exp schedule */
-			/* or lower to save memory for bounded case */
-			if( hook > state->maxhook )
-			{
-				if ( state->bounded  &&  1<<hook > state->bound - state->bound/4 )
-					--hook;
-				else
-					state->maxhook = hook;
-			}
-			state->runhooks[hook] = start;
+			return;	/* >=2 element list, on hook 0 */
 		}
+	}
+	else
+	{	/* Descending-order run */
+		cmp = COMPARETUP(state, &memtuples[head], &memtuples[new]);
+		if( state->dedup  &&  cmp == 0 )
+			goto drop;					/* A duplicate; drop the new one */
+		else if( (cmp > 0) )
+		{	/* new tuple extends run */
+			if( -state->runlen >= bound )
+			{	/* run now longer than required; drop the largest one */
+				end = state->list_end;
+				free_sort_tuple(state, &memtuples[end]);
+				memtuples[end].next = state->mergefreelist;
+				state->mergefreelist = end;
+				state->list_end = end = memtuples[end].prev;
+				memtuples[end].next = -1;
+			}
+			else
+				--state->runlen;
+
+			memtuples[new].next = head;
+			state->runhooks[0] = new;
+			memtuples[head].prev = new;
+			return;	/* >=2 element list, on hook 0 */
+		}
+	}
+
+	/*
+	 * The new tuple breaks the current run.
+	 * Merge the run to free hook zero, then place the tuple
+	 * as first in a new run onto it.
+	 */
+	{
+		int hook;
+		int start = state->runhooks[0];
+		for ( hook = 1;
+			  state->runhooks[hook] >= 0  &&  hook <= state->maxhook + 1;
+			  hook++ )
+		{
+			start = sorb_merge(state, state->runhooks[hook], start, false);
+			state->runhooks[hook] = -1;
+		}
+		/* all hooks up to "hook" now free; use top one for exp schedule */
+		/* or lower to save memory for bounded case */
+		if( hook > state->maxhook )
+		{
+			if ( state->bounded  &&  1<<hook > state->bound - state->bound/4 )
+				--hook;
+			else
+				state->maxhook = hook;
+		}
+		state->runhooks[hook] = start;
 	}
 
 	memtuples[new].next = -1;
@@ -2204,6 +2201,21 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 {
 	switch (state->status)
 	{
+		case TSS_SORB_INIT:	/* Specialcase 1st item, to save a test */
+		{					/* on every successive one.             */
+			Assert(state->mergefreelist == -1);
+			Assert(state->memtupcount == 0);
+			state->status = TSS_SORB;
+			if (0 < state->memtupsize - 1)
+			{
+				state->memtupcount = 1;
+				state->memtuples[0] = *tuple;
+				state->memtuples[0].prev = state->memtuples[0].next = -1;
+				state->runhooks[0] = state->list_end = 0;
+				break;
+			}
+		}
+		/* FALLTHROUGH */
 		case TSS_SORB:
 		{
 			int item;
@@ -2427,6 +2439,7 @@ tuplesort_performsort(Tuplesortstate *state)
 
 	switch (state->status)
 	{
+		case TSS_SORB_INIT:
 		case TSS_SORB:
 			/* 3rd (final) sorb stage: merge all intermediate lists to one */
 			/* Can we use the single-key sort function? */
@@ -2540,6 +2553,7 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 
 	switch (state->status)
 	{
+		case TSS_SORB_INIT:
 		case TSS_SORB:
 		case TSS_SORB_ONESHOT:
 			Assert(forward || state->randomAccess);
@@ -3555,6 +3569,7 @@ tuplesort_rescan(Tuplesortstate *state)
 
 	switch (state->status)
 	{
+		case TSS_SORB_INIT:
 		case TSS_SORB:
 		case TSS_SORB_ONESHOT:
 			state->current = state->markpos_offset = state->list_start;
@@ -3595,6 +3610,7 @@ tuplesort_markpos(Tuplesortstate *state)
 
 	switch (state->status)
 	{
+		case TSS_SORB_INIT:
 		case TSS_SORB:
 		case TSS_SORB_ONESHOT:
 		case TSS_SORTEDINMEM:
@@ -3629,6 +3645,7 @@ tuplesort_restorepos(Tuplesortstate *state)
 
 	switch (state->status)
 	{
+		case TSS_SORB_INIT:
 		case TSS_SORB:
 		case TSS_SORB_ONESHOT:
 		case TSS_SORTEDINMEM:
@@ -3686,6 +3703,7 @@ tuplesort_get_stats(Tuplesortstate *state,
 
 	switch (state->status)
 	{
+		case TSS_SORB_INIT:
 		case TSS_SORB:
 		case TSS_SORB_ONESHOT:
 			*sortMethod = state->boundUsed
