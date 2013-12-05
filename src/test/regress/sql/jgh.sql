@@ -29,10 +29,10 @@ set enable_intmerge_sort to on;
 explain analyze SELECT distinct i FROM jgh;
 set enable_hashagg to off;
 explain analyze SELECT distinct i FROM jgh;
-set optimize_unique_node to off;
-explain analyze SELECT distinct i FROM jgh;
-set optimize_dedup_sort to off;
-explain analyze SELECT distinct i FROM jgh;
+--set optimize_unique_node to off;
+--explain analyze SELECT distinct i FROM jgh;
+--set optimize_dedup_sort to off;
+--explain analyze SELECT distinct i FROM jgh;
 set enable_intmerge_sort to off;
 explain analyze SELECT distinct i FROM jgh;
 DROP TABLE jgh;
@@ -108,10 +108,10 @@ set work_mem to 16384;
 explain analyze SELECT distinct s FROM jgh;
 set enable_hashagg to off;
 explain analyze SELECT distinct s FROM jgh;
-set optimize_unique_node to off;
-explain analyze SELECT distinct s FROM jgh;
-set optimize_dedup_sort to off;
-explain analyze SELECT distinct s FROM jgh;
+--set optimize_unique_node to off;
+--explain analyze SELECT distinct s FROM jgh;
+--set optimize_dedup_sort to off;
+--explain analyze SELECT distinct s FROM jgh;
 set enable_intmerge_sort to off;
 explain analyze SELECT distinct s FROM jgh;
 DROP TABLE jgh;
@@ -153,10 +153,10 @@ set enable_intmerge_sort to on;
 explain analyze SELECT distinct i FROM jgh;
 set enable_hashagg to off;
 explain analyze SELECT distinct i FROM jgh;
-set optimize_unique_node to off;
-explain analyze SELECT distinct i FROM jgh;
-set optimize_dedup_sort to off;
-explain analyze SELECT distinct i FROM jgh;
+--set optimize_unique_node to off;
+--explain analyze SELECT distinct i FROM jgh;
+--set optimize_dedup_sort to off;
+--explain analyze SELECT distinct i FROM jgh;
 set enable_intmerge_sort to off;
 explain analyze SELECT distinct i FROM jgh;
 DROP TABLE jgh;
@@ -200,10 +200,10 @@ set enable_intmerge_sort to on;
 explain analyze SELECT distinct s FROM jgh;
 set enable_hashagg to off;
 explain analyze SELECT distinct s FROM jgh;
-set optimize_unique_node to off;
-explain analyze SELECT distinct s FROM jgh;
-set optimize_dedup_sort to off;
-explain analyze SELECT distinct s FROM jgh;
+--set optimize_unique_node to off;
+--explain analyze SELECT distinct s FROM jgh;
+--set optimize_dedup_sort to off;
+--explain analyze SELECT distinct s FROM jgh;
 set enable_intmerge_sort to off;
 explain analyze SELECT distinct s FROM jgh;
 DROP TABLE jgh;
@@ -228,11 +228,11 @@ explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
 set enable_hashagg to off;
 explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
 
-set optimize_unique_node to off;
-explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
-
-set optimize_dedup_sort to off;
-explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
+--set optimize_unique_node to off;
+--explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
+--
+--set optimize_dedup_sort to off;
+--explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
 
 set enable_intmerge_sort to off;
 explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
@@ -242,12 +242,12 @@ set work_mem to 16384;
 explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
 
 set enable_intmerge_sort to on;
-explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
-
-set optimize_dedup_sort to on;;
-explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
-
-set optimize_unique_node to on;
+--explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
+--
+--set optimize_dedup_sort to on;;
+--explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
+--
+--set optimize_unique_node to on;
 explain analyze SELECT DISTINCT i FROM jgh ORDER BY i;
 
 set enable_hashagg to on;
@@ -260,11 +260,11 @@ explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 10;
 set enable_hashagg to off;
 explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 10;
 
-set optimize_unique_node to off;
-explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 10;
-
-set optimize_dedup_sort to off;
-explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 10;
+--set optimize_unique_node to off;
+--explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 10;
+--
+--set optimize_dedup_sort to off;
+--explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 10;
 
 set enable_intmerge_sort to off;
 explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 10;
@@ -281,11 +281,11 @@ explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 500;
 set enable_hashagg to off;
 explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 500;
 
-set optimize_unique_node to off;
-explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 500;
-
-set optimize_dedup_sort to off;
-explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 500;
+--set optimize_unique_node to off;
+--explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 500;
+--
+--set optimize_dedup_sort to off;
+--explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 500;
 
 set enable_intmerge_sort to off;
 explain analyze SELECT DISTINCT i FROM jgh ORDER BY i LIMIT 500;
