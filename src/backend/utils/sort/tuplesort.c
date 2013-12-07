@@ -345,7 +345,7 @@ struct Tuplesortstate
 	bool		bounded;		/* did caller specify a maximum number of
 								 * tuples to return? */
 	bool		boundUsed;		/* true if we made use of a bounded heap */
-	int			bound;			/* if bounded, the maximum number of tuples */
+	unsigned	bound;			/* if bounded, the maximum number of tuples */
 	int64		availMem;		/* remaining memory available, in bytes */
 	int64		allowedMem;		/* total memory allowed, in bytes */
 	int			maxTapes;		/* number of tapes (Knuth's T) */
@@ -727,6 +727,7 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 		state->list_start = -1;
 		state->maxhook= 0;
 		state->mergefreelist= -1;
+		state->bound = UINT_MAX;
 	}
 	state->status = TSS_INITIAL;
 
@@ -1067,7 +1068,7 @@ tuplesort_set_bound(Tuplesortstate *state, int64 bound)
 		return;
 
 	state->bounded = true;
-	state->bound = (int) bound;
+	state->bound = (unsigned) bound;
 	switch(state->status)
 	{
 	case TSS_INITIAL:	if (enable_intmerge_sort) state->status = TSS_SORB_INIT;
@@ -1452,7 +1453,7 @@ sorb_merge_ssup(struct Tuplesortstate * state, int old, int new,
 	int lo = old;
 	int hi = new;
 	int end = -1;
-	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
+	unsigned bound = state->bound;
 	unsigned cnt = 1;
 	int cmp;
 	SortSupport onlyKey = state->onlyKey;
@@ -1527,7 +1528,7 @@ sorb_merge(struct Tuplesortstate * state, int old, int new, const bool backlink)
 	int end = -1;
 	int lo = old;
 	int hi = new;
-	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
+	unsigned bound = state->bound;
 	unsigned cnt = 1;
 	int cmp;
 	int start = old;
@@ -1609,7 +1610,7 @@ sorb_link_ssup(struct Tuplesortstate * state, int new)
 	SortTuple *op;
 	int head = state->runhooks[0];
 	int end;
-	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
+	unsigned bound = state->bound;
 	int cmp;
 	SortSupport onlyKey = state->onlyKey;
 
@@ -1762,7 +1763,7 @@ sorb_link(struct Tuplesortstate * state, int new)
 	SortTuple *memtuples = state->memtuples;
 	int head = state->runhooks[0];
 	int end;
-	unsigned bound = state->bounded ? (unsigned)state->bound : UINT_MAX;
+	unsigned bound = state->bound;
 	int cmp;
 
 	memtuples[new].prev = -1;
