@@ -2429,7 +2429,7 @@ puttuple_common(Tuplesortstate *state, SortTuple *tuple)
 			break;
 
 		default:
-			elog(ERROR, "invalid tuplesort state");
+			elog(ERROR, "%s: invalid tuplesort state %d", __FUNCTION__, state->status);
 			break;
 	}
 }
@@ -2531,7 +2531,7 @@ tuplesort_performsort(Tuplesortstate *state)
 			break;
 
 		default:
-			elog(ERROR, "invalid tuplesort state");
+			elog(ERROR, "%s: invalid tuplesort state %d", __FUNCTION__, state->status);
 			break;
 	}
 
@@ -2817,7 +2817,7 @@ fmerge_done:	if (dup_dropped)
 			return false;
 
 		default:
-			elog(ERROR, "invalid tuplesort state");
+			elog(ERROR, "%s: invalid tuplesort state %d", __FUNCTION__, state->status);
 			return false;		/* keep compiler quiet */
 	}
 }
@@ -2950,6 +2950,26 @@ tuplesort_skiptuples(Tuplesortstate *state, int64 ntuples, bool forward)
 
 	switch (state->status)
 	{
+		case TSS_SORB_INIT:
+		case TSS_SORB:
+		case TSS_SORB_ONESHOT:
+		{
+			/* Poor performance. If an issue, would have to materialise */
+			while (ntuples-- > 0)
+			{
+				if (state->current < 0)
+				{
+					state->eof_reached = true;
+					return false;
+				}
+				state->current = state->memtuples[state->current].next;
+			}
+
+			/* No obvious way to check for over-read bounded sort. */
+			return true;
+		}
+
+
 		case TSS_SORTEDINMEM:
 			if (state->memtupcount - state->current >= ntuples)
 			{
@@ -2996,7 +3016,7 @@ tuplesort_skiptuples(Tuplesortstate *state, int64 ntuples, bool forward)
 			return true;
 
 		default:
-			elog(ERROR, "invalid tuplesort state");
+			elog(ERROR, "%s: invalid tuplesort state %d", __FUNCTION__, state->status);
 			return false;		/* keep compiler quiet */
 	}
 }
@@ -3672,7 +3692,7 @@ tuplesort_rescan(Tuplesortstate *state)
 			state->markpos_eof = false;
 			break;
 		default:
-			elog(ERROR, "invalid tuplesort state");
+			elog(ERROR, "%s: invalid tuplesort state %d", __FUNCTION__, state->status);
 			break;
 	}
 
@@ -3706,7 +3726,7 @@ tuplesort_markpos(Tuplesortstate *state)
 			state->markpos_eof = state->eof_reached;
 			break;
 		default:
-			elog(ERROR, "invalid tuplesort state");
+			elog(ERROR, "%s: invalid tuplesort state %d", __FUNCTION__, state->status);
 			break;
 	}
 
@@ -3742,7 +3762,7 @@ tuplesort_restorepos(Tuplesortstate *state)
 			state->eof_reached = state->markpos_eof;
 			break;
 		default:
-			elog(ERROR, "invalid tuplesort state");
+			elog(ERROR, "%s: invalid tuplesort state %d", __FUNCTION__, state->status);
 			break;
 	}
 
