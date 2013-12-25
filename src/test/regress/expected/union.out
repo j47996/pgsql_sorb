@@ -525,16 +525,15 @@ SELECT * FROM
    UNION
    SELECT 2 AS t, 4 AS x) ss
 WHERE x < 4;
-                 QUERY PLAN                 
---------------------------------------------
- Unique
-   ->  Sort
-         Sort Key: (1), (2)
-         ->  Append
-               ->  Result
-               ->  Result
-                     One-Time Filter: false
-(7 rows)
+              QUERY PLAN              
+--------------------------------------
+ Sort
+   Sort Key: (1), (2)
+   ->  Append
+         ->  Result
+         ->  Result
+               One-Time Filter: false
+(6 rows)
 
 SELECT * FROM
   (SELECT 1 AS t, 2 AS x
@@ -585,17 +584,16 @@ SELECT * FROM
    UNION
    SELECT 2 AS t, 4 AS x) ss
 WHERE x > 3;
-                                 QUERY PLAN                                 
-----------------------------------------------------------------------------
+                              QUERY PLAN                              
+----------------------------------------------------------------------
  Subquery Scan on ss
    Filter: (ss.x > 3)
-   ->  Unique
-         ->  Sort
-               Sort Key: (1), (((random() * 3::double precision))::integer)
-               ->  Append
-                     ->  Result
-                     ->  Result
-(8 rows)
+   ->  Sort
+         Sort Key: (1), (((random() * 3::double precision))::integer)
+         ->  Append
+               ->  Result
+               ->  Result
+(7 rows)
 
 SELECT * FROM
   (SELECT 1 AS t, (random()*3)::int AS x

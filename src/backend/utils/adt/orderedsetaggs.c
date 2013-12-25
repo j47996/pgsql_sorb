@@ -110,6 +110,7 @@ ordered_set_startup(FunctionCallInfo fcinfo, bool use_tuples)
 		bool	   *sortNullsFirst;
 		ListCell   *lc;
 		int			i;
+		bool		dedup_in_sort = FALSE;	/*XXX could we? */
 
 		if (ishypothetical)
 			numSortCols++;		/* make space for flag column */
@@ -184,7 +185,9 @@ ordered_set_startup(FunctionCallInfo fcinfo, bool use_tuples)
 												   sortOperators,
 												   sortCollations,
 												   sortNullsFirst,
-												   work_mem, false);
+												   work_mem,
+												   &dedup_in_sort,
+												   false);
 
 		/* Create slot we'll use to store/retrieve rows */
 		osastate->tupslot = MakeSingleTupleTableSlot(osastate->tupdesc);
