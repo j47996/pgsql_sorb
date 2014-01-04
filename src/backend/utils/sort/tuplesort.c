@@ -1518,7 +1518,7 @@ sorb_merge_ssup(struct Tuplesortstate * state, int old, int new,
 			}
 		} while( cmp <= 0 );
 		mp[end].next = hi;
-		end = hi; hi = lo; lo = end;
+		{ int tmp = hi; hi = lo; lo = tmp; }
 	}
 }
 static int
@@ -1593,7 +1593,7 @@ sorb_merge(struct Tuplesortstate * state, int old, int new, const bool backlink)
 			}
 		} while( cmp <= 0 );
 		mp[end].next = hi;
-		end = hi; hi = lo; lo = end;	/* flip */
+		{ int tmp = hi; hi = lo; lo = tmp; }	/* flip */
 	}
 }
 
