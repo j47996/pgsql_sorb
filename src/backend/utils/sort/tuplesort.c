@@ -2110,6 +2110,12 @@ heapify_sorted_list(struct Tuplesortstate * state, int start)
 		dest = &memtuples[j];			/* new location in heap */
 		tmp = *dest;					/* make space for new heap element */
 
+		if(this->next == j)				/* we happen to be swapping elem   */
+		{								/* N & N+1                         */
+			Assert(tmp.prev == i);
+			tmp.prev = j;
+		}
+
 		dest->tuple = this->tuple;		/* move element to heap...	*/
 		dest->datum1 = this->datum1;	/*							*/
 		dest->isnull1 = this->isnull1;	/*							*/
