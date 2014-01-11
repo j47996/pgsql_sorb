@@ -4,7 +4,7 @@
  *	  variables used for binary upgrades
  *
  *
- * Portions Copyright (c) 1996-2013, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/binary_upgrade.h
@@ -26,4 +26,3 @@ extern PGDLLIMPORT Oid binary_upgrade_next_pg_enum_oid;
 extern PGDLLIMPORT Oid binary_upgrade_next_pg_authid_oid;
 
 #endif   /* BINARY_UPGRADE_H */
-

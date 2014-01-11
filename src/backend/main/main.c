@@ -9,7 +9,7 @@
  * proper FooMain() routine for the incarnation.
  *
  *
- * Portions Copyright (c) 1996-2013, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2014, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -35,6 +35,7 @@
 #endif
 
 #include "bootstrap/bootstrap.h"
+#include "common/username.h"
 #include "postmaster/postmaster.h"
 #include "tcop/tcopprot.h"
 #include "utils/help_config.h"
