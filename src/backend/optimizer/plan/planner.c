@@ -1866,6 +1866,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			 * have the desired behavior.
 			 */
 			List	   *needed_pathkeys;
+			bool		dedup_sort = false;
 
 			if (parse->hasDistinctOn &&
 				list_length(root->distinct_pathkeys) <
@@ -1878,7 +1879,10 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 			{
 				if (list_length(root->distinct_pathkeys) >=
 					list_length(root->sort_pathkeys))
+				{
 					current_pathkeys = root->distinct_pathkeys;
+					dedup_sort = true;
+				}
 				else
 				{
 					current_pathkeys = root->sort_pathkeys;
@@ -1890,7 +1894,7 @@ grouping_planner(PlannerInfo *root, double tuple_fraction)
 				result_plan = (Plan *) make_sort_from_pathkeys(root,
 															   result_plan,
 															current_pathkeys,
-																true,
+															   dedup_sort,
 															   -1.0);
 			}
 
@@ -2924,6 +2928,8 @@ choose_hashed_distinct(PlannerInfo *root,
 	cost_group(&sorted_p, root, numDistinctCols, dNumDistinctRows,
 			   sorted_p.startup_cost, sorted_p.total_cost,
 			   path_rows);
+	/*XXX It would be nice to modify this cost_sort to account for the
+			lesser cost of sort methods having builtin dedup */
 	if (parse->sortClause &&
 		!pathkeys_contained_in(root->sort_pathkeys, current_pathkeys))
 		cost_sort(&sorted_p, root, root->sort_pathkeys, sorted_p.total_cost,

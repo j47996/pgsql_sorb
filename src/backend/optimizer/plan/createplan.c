@@ -4100,6 +4100,7 @@ find_ec_member_for_tle(EquivalenceClass *ec,
  *
  *	  'lefttree' is the node which yields input tuples
  *	  'pathkeys' is the list of pathkeys by which the result is to be sorted
+ *	  'dedup'    requests DISTINCT output
  *	  'limit_tuples' is the bound on the number of output tuples;
  *				-1 if no bound
  */
@@ -4136,6 +4137,7 @@ make_sort_from_pathkeys(PlannerInfo *root, Plan *lefttree, List *pathkeys,
  *
  *	  'sortcls' is a list of SortGroupClauses
  *	  'lefttree' is the node which yields input tuples
+ *	  'dedup'    requests DISTINCT output
  */
 Sort *
 make_sort_from_sortclauses(PlannerInfo *root, List *sortcls, Plan *lefttree, bool dedup)

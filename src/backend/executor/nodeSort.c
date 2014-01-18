@@ -89,7 +89,7 @@ ExecSort(SortState *node)
 											  plannode->collations,
 											  plannode->nullsFirst,
 											  work_mem,
-									  &((Sort *)node->ss.ps.plan)->dedup_req,
+											  &plannode->dedup_req,
 											  node->randomAccess);
 		if (node->bounded)
 			tuplesort_set_bound(tuplesortstate, node->bound);

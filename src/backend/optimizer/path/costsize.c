@@ -1280,7 +1280,7 @@ cost_recursive_union(Plan *runion, Plan *nrterm, Plan *rterm)
  * of sort keys, which all callers *could* supply.)
  *
  * XXX It would be good to teach cost_sort about in-sort dedup.  What
- * proportion of dups migh we expect, and what is the effect on the work done?
+ * proportion of dups might we expect, and what is the effect on the work done?
  */
 void
 cost_sort(Path *path, PlannerInfo *root,
