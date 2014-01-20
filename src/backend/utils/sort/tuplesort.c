@@ -1697,7 +1697,7 @@ sorb_link_ssup(struct Tuplesortstate * state, int new)
 				ep->next = state->mergefreelist;
 				state->mergefreelist = end;
 				state->list_end = end = ep->prev;
-				ep->next = -1;
+				memtuples[end].next = -1;
 			}
 			else
 				--state->runlen;
@@ -1748,6 +1748,7 @@ sorb_link_ssup(struct Tuplesortstate * state, int new)
 
 	np->next = -1;
 	state->runhooks[0] = state->list_end = new;
+	state->runlen = 1;
 	return;	/* 1-element list, on hook 0 */
 
 drop:
