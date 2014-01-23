@@ -58,13 +58,26 @@ typedef struct Tuplesortstate Tuplesortstate;
  * actually sorted by their hash codes not the raw data.
  */
 
-extern void tuplesort_enquire_heap(bool *dedup);
+#define CAP_BIT(n)		(1<<(n))
+#define SORT_STABLE         CAP_BIT(0)  /* sort maintains non-key col order */
+#define SORT_BOUNDED        CAP_BIT(1)  /* can limit output */
+#define SORT_DEDUP          CAP_BIT(2)  /* can uniqify */
+#define SORT_SORTED_IN      CAP_BIT(3)  /* presorted input advantageous */
+#define SORT_PROGR_IN       CAP_BIT(4)  /* does work during input */
+#define SORT_PROGR_OUT      CAP_BIT(5)  /* does work during output */
+#define SORT_ACCESS_RESTART CAP_BIT(6)  /* reset o/p index */
+#define SORT_ACCESS_BACKWD  CAP_BIT(7)  /* set o/p index to end */
+#define SORT_ACCESS_MARK    CAP_BIT(8)  /* mark/restore o/p index */
+#define SORT_ACCESS_FWIND   CAP_BIT(9)  /* step o/p index several places */
+#define SORT_ACCESS_RANDOM  CAP_BIT(10) /* set o/p index */
+
+extern unsigned tuplesort_enquire_heap(void);
 
 extern Tuplesortstate *tuplesort_begin_heap(TupleDesc tupDesc,
 					 int nkeys, AttrNumber *attNums,
 					 Oid *sortOperators, Oid *sortCollations,
 					 bool *nullsFirstFlags,
-					 int workMem, bool *dedup, bool randomAccess);
+					 int workMem, unsigned sort_caps);
 extern Tuplesortstate *tuplesort_begin_cluster(TupleDesc tupDesc,
 						Relation indexRel,
 						int workMem, bool randomAccess);

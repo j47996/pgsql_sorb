@@ -155,9 +155,6 @@
  *
  * Possible extensions:
  *
- *  The Unique node could be collapsed when the underlying sort supports
- * dedup; the work it does is wasted.
- *
  *  The Sort node costing in the planner could be adjusted when the dedup
  * is required and supported.
  *
@@ -764,12 +761,26 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 	return state;
 }
 
-/* This should grow into a general capabilities enquiry */
-void
-tuplesort_enquire_heap(bool *dedup)
+/*
+ * General capabilities enquiry for the package.
+ * We don't say anything about unsupported conbinations.
+ * Executor should call tuplesort_begin~() and maybe tuplesort_set_bound()
+ * with specific caps required.
+ */
+unsigned
+tuplesort_enquire_heap(void)
 {
-	if (!optimize_dedup_sort || !enable_intmerge_sort)
-		*dedup = false;
+	unsigned caps = SORT_BOUNDED
+		+SORT_ACCESS_RESTART+SORT_ACCESS_BACKWD
+		+SORT_ACCESS_MARK+SORT_ACCESS_FWIND;
+
+	if (enable_intmerge_sort)
+	{
+		caps |= SORT_SORTED_IN+SORT_PROGR_IN;
+		if (optimize_dedup_sort)
+			caps |= SORT_DEDUP;
+	}
+	return caps;
 }
 
 Tuplesortstate *
@@ -777,12 +788,16 @@ tuplesort_begin_heap(TupleDesc tupDesc,
 					 int nkeys, AttrNumber *attNums,
 					 Oid *sortOperators, Oid *sortCollations,
 					 bool *nullsFirstFlags,
-					 int workMem, bool *dedup, bool randomAccess)
+					 int workMem, unsigned sort_caps)
 {
-	Tuplesortstate *state = tuplesort_begin_common(workMem, randomAccess);
+	Tuplesortstate *state;
 	MemoryContext oldcontext;
 	int			i;
+	bool		randomAccess =
+		!!(sort_caps & (SORT_ACCESS_RESTART|SORT_ACCESS_BACKWD|SORT_ACCESS_MARK
+						|SORT_ACCESS_FWIND|SORT_ACCESS_RANDOM));
 
+	state = tuplesort_begin_common(workMem, randomAccess);
 	oldcontext = MemoryContextSwitchTo(state->sortcontext);
 
 	AssertArg(nkeys > 0);
@@ -792,14 +807,23 @@ tuplesort_begin_heap(TupleDesc tupDesc,
 		elog(LOG,
 			 "begin heap sort: nkeys = %d, workMem = %d, dedup = %c, randomAccess = %c",
 			 nkeys, workMem,
-			 *dedup ? 't' : 'f', randomAccess ? 't' : 'f');
+			 sort_caps & SORT_DEDUP ? 't' : 'f',
+			 randomAccess ? 't' : 'f');
 #endif
 
 	state->nKeys = nkeys;
-	if ((state->dedup = *dedup && optimize_dedup_sort) && enable_intmerge_sort)
-		state->status = TSS_SORB_INIT;
-	else
-		*dedup = false;
+	state->dedup = false;
+	if( !(sort_caps & SORT_ACCESS_RANDOM) && enable_intmerge_sort)
+	{							/*XXX consider not supporting FWIND either */
+
+		if( (sort_caps & SORT_DEDUP) && optimize_dedup_sort )
+		{
+			state->status = TSS_SORB_INIT;
+			state->dedup = true;
+		}
+		else if( sort_caps & (SORT_SORTED_IN|SORT_PROGR_IN) )
+			state->status = TSS_SORB_INIT;
+	}
 
 	TRACE_POSTGRESQL_SORT_START(HEAP_SORT,
 								false,	/* no unique check */
@@ -1378,48 +1402,6 @@ tuplesort_putdatum(Tuplesortstate *state, Datum val, bool isNull)
 
 /* Sorb 2nd/3rd stage: merge a pair of lists. */
 /* If requested, fill in backlinks as we go, and note how far backlinking got.*/
-static int
-sorb_merge_basic(struct Tuplesortstate * state, int old, int new)
-{
-	SortTuple *mp = state->memtuples;
-	int end = -1;
-	int lo = old;
-	int hi = new;
-	int cmp;
-	int start = old;
-	const SortSupport onlyKey = state->onlyKey;
-
-	/* ssup, no bounds, no dedup, no backlinking */
-	CHECK_FOR_INTERRUPTS();
-	cmp = cmp_ssup(&mp[old], &mp[new], onlyKey);
-	if( cmp > 0 )
-	{
-		lo = start = new;
-		hi = old;
-	}
-	/*
-	 * As we've abandoned stability we can do <= compares when either
-	 * source is winning the merge - so we can combine the two loops.
-	 */
-	for(;;)			/* flipping lo & hi between the two input lists */
-	{
-		do {		/* while lo really is lower than hi, walking lo */
-			end = lo;
-			lo = mp[lo].next;
-			if( lo == -1 )	/* Just link remainder list on the end */
-			{
-				mp[end].next = hi;
-				return start;
-			}
-
-			CHECK_FOR_INTERRUPTS();
-			cmp = cmp_ssup(&mp[lo], &mp[hi], onlyKey);
-		} while( cmp <= 0 );
-		mp[end].next = hi;
-
-		end = hi; hi = lo; lo = end;	/* flip */
-	}
-}
 static inline int
 drop_one(struct Tuplesortstate * state, SortTuple * mp, int idx)
 {
@@ -2844,95 +2826,6 @@ tuplesort_getdatum(Tuplesortstate *state, bool forward,
 }
 
 /*
- * Advance over N tuples in either forward or back direction,
- * without returning any data.  N==0 is a no-op.
- * Returns TRUE if successful, FALSE if ran out of tuples.
- */
-bool
-tuplesort_skiptuples(Tuplesortstate *state, int64 ntuples, bool forward)
-{
-	MemoryContext oldcontext;
-
-	/*
-	 * We don't actually support backwards skip yet, because no callers need
-	 * it.	The API is designed to allow for that later, though.
-	 */
-	Assert(forward);
-	Assert(ntuples >= 0);
-
-	switch (state->status)
-	{
-		case TSS_SORB_INIT:
-		case TSS_SORB:
-		{
-			/* Poor performance. If an issue, would have to materialise */
-			while (ntuples-- > 0)
-			{
-				if (state->current < 0)
-				{
-					state->eof_reached = true;
-					return false;
-				}
-				state->current = state->memtuples[state->current].next;
-			}
-
-			/* No obvious way to check for over-read bounded sort. */
-			return true;
-		}
-
-
-		case TSS_SORTEDINMEM:
-			if (state->memtupcount - state->current >= ntuples)
-			{
-				state->current += ntuples;
-				return true;
-			}
-			state->current = state->memtupcount;
-			state->eof_reached = true;
-
-			/*
-			 * Complain if caller tries to retrieve more tuples than
-			 * originally asked for in a bounded sort.	This is because
-			 * returning EOF here might be the wrong thing.
-			 */
-			if (state->bounded && state->current >= state->bound)
-				elog(ERROR, "retrieved too many tuples in a bounded sort");
-
-			return false;
-
-		case TSS_SORTEDONTAPE:
-		case TSS_FINALMERGE:
-
-			/*
-			 * We could probably optimize these cases better, but for now it's
-			 * not worth the trouble.
-			 */
-			oldcontext = MemoryContextSwitchTo(state->sortcontext);
-			while (ntuples-- > 0)
-			{
-				SortTuple	stup;
-				bool		should_free;
-
-				if (!tuplesort_gettuple_common(state, forward,
-											   &stup, &should_free))
-				{
-					MemoryContextSwitchTo(oldcontext);
-					return false;
-				}
-				if (should_free && stup.tuple)
-					pfree(stup.tuple);
-				CHECK_FOR_INTERRUPTS();
-			}
-			MemoryContextSwitchTo(oldcontext);
-			return true;
-
-		default:
-			elog(ERROR, "%s: invalid tuplesort state %d", __FUNCTION__, state->status);
-			return false;		/* keep compiler quiet */
-	}
-}
-
-/*
  * tuplesort_merge_order - report merge order we'll use for given memory
  * (note: "merge order" just means the number of input tapes in the merge).
  *
@@ -3675,6 +3568,94 @@ tuplesort_restorepos(Tuplesortstate *state)
 	}
 
 	MemoryContextSwitchTo(oldcontext);
+}
+
+/*
+ * Advance over N tuples in either forward or back direction,
+ * without returning any data.  N==0 is a no-op.
+ * Returns TRUE if successful, FALSE if ran out of tuples.
+ */
+bool
+tuplesort_skiptuples(Tuplesortstate *state, int64 ntuples, bool forward)
+{
+	MemoryContext oldcontext;
+
+	/*
+	 * We don't actually support backwards skip yet, because no callers need
+	 * it.	The API is designed to allow for that later, though.
+	 */
+	Assert(forward);
+	Assert(ntuples >= 0);
+
+	switch (state->status)
+	{
+		case TSS_SORB_INIT:
+		case TSS_SORB:
+			/* Poor performance. If an issue, would have to materialise */
+			/*XXX this is the SORT_FWIND case. Support it for now, poorly */
+			while (ntuples-- > 0)
+			{
+				if (state->current < 0)
+				{
+					state->eof_reached = true;
+					return false;
+				}
+				state->current = state->memtuples[state->current].next;
+			}
+
+			/* No obvious way to check for over-read bounded sort. */
+			return true;
+
+
+		case TSS_SORTEDINMEM:
+			if (state->memtupcount - state->current >= ntuples)
+			{
+				state->current += ntuples;
+				return true;
+			}
+			state->current = state->memtupcount;
+			state->eof_reached = true;
+
+			/*
+			 * Complain if caller tries to retrieve more tuples than
+			 * originally asked for in a bounded sort.	This is because
+			 * returning EOF here might be the wrong thing.
+			 */
+			if (state->bounded && state->current >= state->bound)
+				elog(ERROR, "retrieved too many tuples in a bounded sort");
+
+			return false;
+
+		case TSS_SORTEDONTAPE:
+		case TSS_FINALMERGE:
+
+			/*
+			 * We could probably optimize these cases better, but for now it's
+			 * not worth the trouble.
+			 */
+			oldcontext = MemoryContextSwitchTo(state->sortcontext);
+			while (ntuples-- > 0)
+			{
+				SortTuple	stup;
+				bool		should_free;
+
+				if (!tuplesort_gettuple_common(state, forward,
+											   &stup, &should_free))
+				{
+					MemoryContextSwitchTo(oldcontext);
+					return false;
+				}
+				if (should_free && stup.tuple)
+					pfree(stup.tuple);
+				CHECK_FOR_INTERRUPTS();
+			}
+			MemoryContextSwitchTo(oldcontext);
+			return true;
+
+		default:
+			elog(ERROR, "%s: invalid tuplesort state %d", __FUNCTION__, state->status);
+			return false;		/* keep compiler quiet */
+	}
 }
 
 /*

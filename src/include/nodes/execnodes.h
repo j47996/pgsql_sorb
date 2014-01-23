@@ -1663,9 +1663,20 @@ typedef struct MaterialState
 typedef struct SortState
 {
 	ScanState	ss;				/* its first field is NodeTag */
-	bool		randomAccess;	/* need random access to sort output? */
-	bool		dedup;			/* uniquify where possible during sort */
-	bool		bounded;		/* is the result set bounded? */
+	unsigned	sort_caps;		/* facilities requested in the sort */
+#define CAP_BIT(n)      (1<<(n))
+#define SORT_STABLE         CAP_BIT(0)  /* sort maintains non-key col order */
+#define SORT_BOUNDED        CAP_BIT(1)  /* can limit output */
+#define SORT_DEDUP          CAP_BIT(2)  /* can uniqify */
+#define SORT_SORTED_IN      CAP_BIT(3)  /* presorted input advantageous */
+#define SORT_PROGR_IN       CAP_BIT(4)  /* does work during input */
+#define SORT_PROGR_OUT      CAP_BIT(5)  /* does work during output */
+#define SORT_ACCESS_RESTART CAP_BIT(6)  /* reset o/p index */
+#define SORT_ACCESS_BACKWD  CAP_BIT(7)  /* set o/p index to end */
+#define SORT_ACCESS_MARK    CAP_BIT(8)  /* mark/restore o/p index */
+#define SORT_ACCESS_FWIND   CAP_BIT(9)  /* step o/p index several places */
+#define SORT_ACCESS_RANDOM  CAP_BIT(10) /* set o/p index */
+
 	int64		bound;			/* if bounded, how many tuples are needed */
 	bool		sort_Done;		/* sort completed yet? */
 	bool		bounded_Done;	/* value of bounded we did the sort with */

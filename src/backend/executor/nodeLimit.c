@@ -327,11 +327,11 @@ pass_down_bound(LimitState *node, PlanState *child_node)
 		if (node->noCount || tuples_needed < 0)
 		{
 			/* make sure flag gets reset if needed upon rescan */
-			sortState->bounded = false;
+			sortState->sort_caps &= SORT_BOUNDED;
 		}
 		else
 		{
-			sortState->bounded = true;
+			sortState->sort_caps |= SORT_BOUNDED;
 			sortState->bound = tuples_needed;
 		}
 	}

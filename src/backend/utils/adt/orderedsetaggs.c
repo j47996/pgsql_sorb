@@ -106,7 +106,7 @@ ordered_set_startup(FunctionCallInfo fcinfo, bool use_tuples)
 	OSAPerGroupState *osastate;
 	OSAPerQueryState *qstate;
 	MemoryContext oldcontext;
-	bool dedup_in_sort = FALSE;	/*XXX could we? */
+	unsigned sort_caps = SORT_ACCESS_FWIND;	/*XXX could we dedup? */
 
 	/*
 	 * We keep a link to the per-query state in fn_extra; if it's not there,
@@ -274,22 +274,20 @@ ordered_set_startup(FunctionCallInfo fcinfo, bool use_tuples)
 	osastate->qstate = qstate;
 
 	/* Initialize tuplesort object */
-	if (use_tuples)
-		osastate->sortstate = tuplesort_begin_heap(qstate->tupdesc,
-												   qstate->numSortCols,
-												   qstate->sortColIdx,
-												   qstate->sortOperators,
-												   qstate->sortCollations,
-												   qstate->sortNullsFirsts,
-												   work_mem,
-												   &dedup_in_sort,
-												   false);
-	else
-		osastate->sortstate = tuplesort_begin_datum(qstate->sortColType,
-													qstate->sortOperator,
-													qstate->sortCollation,
-													qstate->sortNullsFirst,
-													work_mem, false);
+	osastate->sortstate = use_tuples
+		? tuplesort_begin_heap(qstate->tupdesc, qstate->numSortCols,
+												qstate->sortColIdx,
+												qstate->sortOperators,
+												qstate->sortCollations,
+												qstate->sortNullsFirsts,
+												work_mem,
+												sort_caps)
+		: tuplesort_begin_datum(qstate->sortColType,
+												qstate->sortOperator,
+												qstate->sortCollation,
+												qstate->sortNullsFirst,
+												work_mem, false);
+/*XXX false for randomAccess?  When we do tuplesort_skiptuples()?  Really? */
 
 	osastate->number_of_rows = 0;
 

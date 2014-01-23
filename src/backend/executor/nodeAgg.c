@@ -343,7 +343,7 @@ initialize_aggregates(AggState *aggstate,
 		 */
 		if (peraggstate->numSortCols > 0)
 		{
-			bool dedup_in_sort = FALSE;	/*XXX could we? "DISTINT" above... */
+			unsigned sort_caps = 0;	/*XXX could we dedup? cf. DISTINCT above */
 			/*
 			 * In case of rescan, maybe there could be an uncompleted sort
 			 * operation?  Clean it up if so.
@@ -369,7 +369,7 @@ initialize_aggregates(AggState *aggstate,
 									 peraggstate->sortOperators,
 									 peraggstate->sortCollations,
 									 peraggstate->sortNullsFirst,
-									 work_mem, &dedup_in_sort, false);
+									 work_mem, sort_caps);
 		}
 
 		/*

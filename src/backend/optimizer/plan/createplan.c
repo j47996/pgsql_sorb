@@ -3779,8 +3779,8 @@ make_sort(PlannerInfo *root, Plan *lefttree, int numCols,
 	node->nullsFirst = nullsFirst;
 
 	node->dedup_req = dedup;
-    tuplesort_enquire_heap(&dedup);	/* does sort guarantee full dedup? */
-	node->dedup_supp = dedup;
+	if(dedup)					/* does sort guarantee full dedup? */
+		node->dedup_supp = !!(tuplesort_enquire_heap() & SORT_DEDUP);
 
 	return node;
 }

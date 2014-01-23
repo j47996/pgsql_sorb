@@ -63,6 +63,7 @@ ExecSort(SortState *node)
 		Sort	   *plannode = (Sort *) node->ss.ps.plan;
 		PlanState  *outerNode;
 		TupleDesc	tupDesc;
+		unsigned	sort_caps = 0;
 
 		SO1_printf("ExecSort: %s\n",
 				   "sorting subplan");
@@ -82,6 +83,9 @@ ExecSort(SortState *node)
 		outerNode = outerPlanState(node);
 		tupDesc = ExecGetResultType(outerNode);
 
+		sort_caps = node->sort_caps & ~SORT_DEDUP;
+		if( plannode->dedup_supp ) sort_caps |= SORT_DEDUP;
+
 		tuplesortstate = tuplesort_begin_heap(tupDesc,
 											  plannode->numCols,
 											  plannode->sortColIdx,
@@ -89,9 +93,8 @@ ExecSort(SortState *node)
 											  plannode->collations,
 											  plannode->nullsFirst,
 											  work_mem,
-											  &plannode->dedup_req,
-											  node->randomAccess);
-		if (node->bounded)
+									  		  sort_caps);
+		if (node->sort_caps & SORT_BOUNDED)
 			tuplesort_set_bound(tuplesortstate, node->bound);
 		node->tuplesortstate = (void *) tuplesortstate;
 
@@ -123,7 +126,7 @@ ExecSort(SortState *node)
 		 * finally set the sorted flag to true
 		 */
 		node->sort_Done = true;
-		node->bounded_Done = node->bounded;
+		node->bounded_Done = !!(node->sort_caps & SORT_BOUNDED);
 		node->bound_Done = node->bound;
 		SO1_printf("ExecSort: %s\n", "sorting done");
 	}
@@ -153,6 +156,7 @@ SortState *
 ExecInitSort(Sort *node, EState *estate, int eflags)
 {
 	SortState  *sortstate;
+	unsigned	caps = 0;
 
 	SO1_printf("ExecInitSort: %s\n",
 			   "initializing sort node");
@@ -169,15 +173,11 @@ ExecInitSort(Sort *node, EState *estate, int eflags)
 	 * mark/restore.  We also prefer to materialize the sort output if we
 	 * might be called on to rewind and replay it many times.
 	 */
-	sortstate->randomAccess = (eflags & (EXEC_FLAG_REWIND |
-										 EXEC_FLAG_BACKWARD |
-										 EXEC_FLAG_MARK)) != 0;
-
-	/*XXX this seems to get lost by the call to ExecProcNode;
-	 * hack it in ExecSort to use the Plan not the PlanState. */
-	sortstate->dedup = node->dedup_req;
-
-	sortstate->bounded = false;
+	if( eflags & EXEC_FLAG_REWIND   ) caps |= SORT_ACCESS_RESTART;
+	if( eflags & EXEC_FLAG_BACKWARD ) caps |= SORT_ACCESS_BACKWD;
+	if( eflags & EXEC_FLAG_MARK     ) caps |= SORT_ACCESS_MARK;
+	if( node->dedup_req             ) caps |= SORT_DEDUP;
+	sortstate->sort_caps = caps;
 	sortstate->sort_Done = false;
 	sortstate->tuplesortstate = NULL;
 
@@ -314,9 +314,9 @@ ExecReScanSort(SortState *node)
 	 * Otherwise we can just rewind and rescan the sorted output.
 	 */
 	if (node->ss.ps.lefttree->chgParam != NULL ||
-		node->bounded != node->bounded_Done ||
+		!!(node->sort_caps & SORT_BOUNDED) != node->bounded_Done ||
 		node->bound != node->bound_Done ||
-		!node->randomAccess)
+		!(node->sort_caps & SORT_ACCESS_RESTART))
 	{
 		node->sort_Done = false;
 		tuplesort_end((Tuplesortstate *) node->tuplesortstate);
