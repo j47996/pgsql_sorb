@@ -310,7 +310,6 @@ typedef enum
 	TSS_INITIAL,				/* Loading tuples; still within memory limit */
 	TSS_BOUNDED,				/* Loading tuples into bounded-size heap */
 	TSS_BUILDRUNS,				/* Loading tuples; writing to tape */
-	TSS_SORB_ONESHOT,			/* Nonprogressive alternate internal sort */
 	TSS_SORTEDINMEM,			/* Sort completed entirely in memory */
 	TSS_SORTEDONTAPE,			/* Sort completed, final run is on tape */
 	TSS_FINALMERGE				/* Performing final merge on-the-fly */
@@ -720,7 +719,7 @@ tuplesort_begin_common(int workMem, bool randomAccess)
 #endif
 
 	if (enable_intmerge_sort)
-	{ /* Go to TSS_SORB_INIT if dedup or bounded; to TSS_SORB_ONESHOT if input ends early */
+	{ /* Go to TSS_SORB_INIT if dedup or bounded */
 		int * hp;
 		for(hp = state->runhooks; hp < state->runhooks + NHOOKS; hp++)
 			*hp = -1;
@@ -1069,11 +1068,10 @@ tuplesort_set_bound(Tuplesortstate *state, int64 bound)
 
 	state->bounded = true;
 	state->bound = (unsigned) bound;
-	switch(state->status)
+	if (enable_intmerge_sort)
 	{
-	case TSS_INITIAL:	if (enable_intmerge_sort) state->status = TSS_SORB_INIT;
-	case TSS_SORB_INIT:	state->boundUsed = true;
-	default:			break;
+		state->status = TSS_SORB_INIT;
+		state->boundUsed = true;
 	}
 }
 
@@ -1953,89 +1951,6 @@ sorb_collector(struct Tuplesortstate * state, bool backlink)
 	return start;
 }
 
-/* Do the whole sorb thing on an already-loaded array */
-static int
-sorb_oneshot(struct Tuplesortstate * state)
-{
-	SortTuple *memtuples = state->memtuples;
-	int item;
-	SortTuple *np;
-	SortTuple *hp;	/* head of run */
-	int hi;
-	SortTuple *ep;	/* end of run */
-	const int lim = state->memtupcount;
-	const SortSupport onlyKey = state->onlyKey;
-	int runlen;
-
-	/* No bounds or dedup; TSS_SORB is used for them */
-
-	/* Linker, with scheduled partial merges */
-	item = 0, np = memtuples;
-	while(item < lim)
-	{
-		hi = item, hp = ep = np, runlen = 1;
-
-		if(++item < lim)
-		{
-			CHECK_FOR_INTERRUPTS();
-			np++;
-			if((onlyKey ? cmp_ssup(hp, np, onlyKey)
-					    : COMPARETUP(state, hp, np)) <= 0)
-				do			/* non-descending order run */
-				{			/* append to list */
-					CHECK_FOR_INTERRUPTS();
-					ep->next = item, runlen++;
-					ep = np;
-					if(++item >= lim) break;
-					np++;
-				} while((onlyKey ? cmp_ssup(ep, np, onlyKey)
-								 : COMPARETUP(state, ep, np)) <= 0);
-			else			
-				do			/* descending-order run */
-				{			/* prepend to list */
-					CHECK_FOR_INTERRUPTS();
-					np->next = hi, runlen++;
-					hp = np, hi = item;
-					if(++item >= lim) break;
-					np++;
-				} while((onlyKey ? cmp_ssup(hp, np, onlyKey)
-								 : COMPARETUP(state, hp, np)) > 0);
-			/* item, np breaks run (or past eof) */
-			/* hi is now the head of a non-descending run */
-		}
-		ep->next = -1;
-
-		/* Merge run onto hooks starting at optimal placement point.
-		 * This gives 1.6% fewer compares at N=2e5 random, compared to
-		 * always starting at the bottom.
-		 */
-/* note this choice makes the sort non-stable; to maintain stability we could
-   merge all hooks from 0 to at least here first, then place or merge here. */
-/* Maybe we should have a stability option switch. */
-		{
-			int hook;
-			for ( hook= 0, runlen /= 4; runlen; runlen /= 2 ) hook++;
-			for ( ;
-				  state->runhooks[hook] >= 0  &&  hook <= state->maxhook + 1;
-				  hook++ )
-			{
-				hi= onlyKey ? sorb_merge_basic(state, state->runhooks[hook], hi)
-							: sorb_merge(state, state->runhooks[hook], hi, false);
-				state->runhooks[hook] = -1;
-			}
-			/* all hooks up to "hook" now free; use top one for exp schedule */
-			if( hook > state->maxhook )
-				state->maxhook = hook;
-			state->runhooks[hook] = hi;
-		}
-		/* start over with the run-breaking item */
-	}
-
-	/* Collector */
-	return onlyKey ? sorb_collector_ssup(state, state->randomAccess)
-				   : sorb_collector(state, state->randomAccess);
-}
-
 /*
  * Walk the list setting up a back-link chain (for reverse access).
  */
@@ -2480,15 +2395,6 @@ tuplesort_performsort(Tuplesortstate *state)
 			 */
 			if (state->memtupcount > 1)
 			{
-				if (enable_intmerge_sort)
-				{
-					state->status = TSS_SORB_ONESHOT;
-					state->current =
-					state->markpos_offset =
-					state->list_start= sorb_oneshot(state);
-					break;
-				}
-
 				/* Can we use the single-key sort function? */
 				if (state->onlyKey != NULL)
 					qsort_ssup(state->memtuples, state->memtupcount,
@@ -2573,7 +2479,6 @@ tuplesort_gettuple_common(Tuplesortstate *state, bool forward,
 	{
 		case TSS_SORB_INIT:
 		case TSS_SORB:
-		case TSS_SORB_ONESHOT:
 			Assert(forward || state->randomAccess);
 			*should_free = false;
 			if (forward)
@@ -2959,7 +2864,6 @@ tuplesort_skiptuples(Tuplesortstate *state, int64 ntuples, bool forward)
 	{
 		case TSS_SORB_INIT:
 		case TSS_SORB:
-		case TSS_SORB_ONESHOT:
 		{
 			/* Poor performance. If an issue, would have to materialise */
 			while (ntuples-- > 0)
@@ -3679,7 +3583,6 @@ tuplesort_rescan(Tuplesortstate *state)
 	{
 		case TSS_SORB_INIT:
 		case TSS_SORB:
-		case TSS_SORB_ONESHOT:
 			state->current = state->markpos_offset = state->list_start;
 			state->eof_reached = state->markpos_eof = false;
 			break;
@@ -3720,7 +3623,6 @@ tuplesort_markpos(Tuplesortstate *state)
 	{
 		case TSS_SORB_INIT:
 		case TSS_SORB:
-		case TSS_SORB_ONESHOT:
 		case TSS_SORTEDINMEM:
 			state->markpos_offset = state->current;
 			state->markpos_eof = state->eof_reached;
@@ -3755,7 +3657,6 @@ tuplesort_restorepos(Tuplesortstate *state)
 	{
 		case TSS_SORB_INIT:
 		case TSS_SORB:
-		case TSS_SORB_ONESHOT:
 		case TSS_SORTEDINMEM:
 			state->current = state->markpos_offset;
 			state->eof_reached = state->markpos_eof;
@@ -3813,7 +3714,6 @@ tuplesort_get_stats(Tuplesortstate *state,
 	{
 		case TSS_SORB_INIT:
 		case TSS_SORB:
-		case TSS_SORB_ONESHOT:
 			*sortMethod = state->boundUsed
 				? state->dedup
 					? "first-N dedup internal merge"
